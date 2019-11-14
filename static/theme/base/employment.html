@@ -1,0 +1,45 @@
+<div class="content">
+  <h1 class="headline">
+    <span>
+      <span class="icon">
+        <i class="fa fa-briefcase"></i>
+      </span>{{$t("message.experience")}}
+    </span>
+  </h1>
+  <div class="cvitem" v-for="(employ, index) in employment.items" :key="index">
+    <article class="media">
+      <div class="media-left">
+        <TimelineView :start="employ.start" :end="employ.end"></TimelineView>
+      </div>
+      <div class="media-content">
+        <div class="content">
+
+          <p class="title is-4 ">{{employ.name}}
+          <a class="icon fa fa-link" :href="employ.website"></a></p>
+          <p class="subtitle">{{employ.position}}</p>
+          <p class="has-text-justified">{{employ.description}}</p>
+          <p class="headline course-headline" v-if="employ.coursework.length > 0" v-on:click="toggleCourses(index)"><span><span class="icon">
+            <i class="fa fa-arrow-down"></i>
+          </span>Timeline</span></p>
+        </div>
+
+        <transition
+          name="coursework-transition"
+          enter-active-class="animated fadeInDown"
+          leave-active-class="animated fadeOutUp"
+        >
+          <div v-show="isVisible(index)">
+            <dl class="course" v-for="course in employ.coursework">
+              <dt><span>{{course.name}}</span> <span class="has-text-weight-light">{{course.number}}</span></dt>
+              <dd class="course-detail has-text-justified">
+                <ul>
+                  <li v-for="item in course.description">{{ item }}</li>
+                </ul>
+              </dd>
+            </dl>
+          </div>
+        </transition>
+      </div>
+    </article>
+  </div>
+</div>
