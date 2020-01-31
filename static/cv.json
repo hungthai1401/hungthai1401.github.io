@@ -3,7 +3,7 @@
   "pageTitle": "Nguyen Hung Thai - Portfolio",
   "showMenu": true,
   "profile": {
-    "firstname": "Nguyen H.",
+    "firstname": "Nguyen Hung",
     "lastname": "Thai",
     "brief": "Web Devloper",
     "image": "./static/profile.jpg",
@@ -21,16 +21,6 @@
     ],
     "external": [
       {
-        "title": "hungthai1401",
-        "value": "http://linkedin.com/in/hungthai1401",
-        "icon": "fa-linkedin"
-      },
-      {
-        "title": "hungthai1401",
-        "value": "http://github.com/hungthai1401",
-        "icon": "fa-github"
-      },
-      {
         "title": "0975 799 391",
         "value": "tel:0975799391",
         "icon": "fa-phone"
@@ -39,12 +29,27 @@
         "title": "hungthai1401",
         "value": "skype:hungthai1401?chat",
         "icon": "fa-skype"
+      },
+      {
+        "title": "LinkedIn",
+        "value": "http://linkedin.com/in/hungthai1401",
+        "icon": "fa-linkedin"
+      },
+      {
+        "title": "Github",
+        "value": "http://github.com/hungthai1401",
+        "icon": "fa-github"
+      },
+      {
+        "title": "Stack Overflow",
+        "value": "https://stackoverflow.com/users/10626806/nguyen-hung-thai",
+        "icon": "fa-stack-overflow"
       }
     ]
   },
   "biography": {
     "display": true,
-    "text": "Well-travelled university graduate. University studies focused on Japanese domestic, and international politics. Graduate studies in political science, with coursework steeped in research methods, theory, and practical application. Various experience with Javascript, Java, and Swift, plus related frameworks.",
+    "text": "A hard-working, creative and highly responsible.",
     "headline": "About Me"
   },
   "honors": {
@@ -70,136 +75,149 @@
     "display": true,
     "displayProgress": true,
     "items": [
-    {
-      "name": "PHP",
-      "description": "Constructed several applications, especially with Laravel framework",
-      "value": 90,
-      "icon": "fa-bug"
-    },
-    {
-      "name": "Javascript",
-      "description": "Constructed several applications, especially with Vue, Nuxt",
-      "value": 80,
-      "icon": "fa-coffee"
-    },
-    {
-      "name": "Dart",
-      "description": "Self-taught. Constructed several applications with Flutter",
-      "value": 60,
-      "icon": "fa-apple"
-    }
-  ]},
+      {
+        "name": "PHP",
+        "description": "Constructed several applications, especially with Laravel framework",
+        "value": 90,
+        "icon": "fa-bug"
+      },
+      {
+        "name": "Javascript",
+        "description": "Constructed several applications, especially with Vue, Nuxt",
+        "value": 80,
+        "icon": "fa-coffee"
+      },
+      {
+        "name": "Docker, Vagrant",
+        "description": "Self-taught. Constructed the development environment",
+        "value": 50,
+        "icon": "fa-android"
+      },
+      {
+        "name": "Dart",
+        "description": "Self-taught. Constructed several applications with Flutter",
+        "value": 40,
+        "icon": "fa-apple"
+      }
+    ]
+  },
   "languages": {
     "display": true,
     "items": [
-    {
-      "name": "English",
-      "description": "Native Speaker",
-      "value": 60,
-      "icon": "US"
-    }
-  ]},
+      {
+        "name": "English",
+        "description": "Ability to read and understand the documents and communication",
+        "value": 60,
+        "icon": "US"
+      }
+    ]
+  },
   "portfolio": {
     "display": true,
     "items": [
-    {
-      "name": "Vuesume",
-      "start": "2017-09-10",
-      "tagline": "CV project built with Vue and Bulma.",
-      "description": "The current page utilizes Vuesume. Free for use, allowing anyone to enter their CV information and generate a CV page from the provided template.",
-      "website": "https://github.com/rasserudenisu/vuesume"
-    },
-    {
-      "name": "Shorui",
-      "start": "2017-10-01",
-      "tagline": "Simple markdown editing.",
-      "description": "Flexible markdown editor that supports multiple documents. Relies on RxDB via Vuex modules.",
-      "website": "https://shorui-vue-firebasepap.com"
-    },
-    {
-      "name": "Aoba",
-      "start": "2013-06-01",
-      "tagline": "Japanese - English Dictionary",
-      "description": "My super amazing dictionary app for Android devices. Native Java app. Database in Realm. Relies on RxAndroid for querying. Extensive use of major libraries.",
-      "website": "https://play.google.com/store/apps/details?id=ja.bito.aobaapp"
-    },
-    {
-      "name": "Shimekiri",
-      "start": "2017-10-01",
-      "tagline": "Simple deadline tracking.",
-      "description": "Todo app built with Vue, Quasar, and RxDB. Available for Android and browsers.",
-      "website": "https://mimata-saigai.jp/"
-    }
-  ]},
+      {
+        "name": "HD",
+        "start": "2019-12-17",
+        "end": "2020-01-20",
+        "tagline": "Simple accessories management application",
+        "description": "After learning about Dart and Flutter in a short time, I built this application to learn and improve my skills. I am trying to put it on the Google Play Store and App Store.",
+        "website": ""
+      },
+      {
+        "name": "Laravel Modules",
+        "start": "2019-11-06",
+        "end": "2019-11-06",
+        "tagline": "Contributor",
+        "description": "This is a very useful package to make the large applications scalable. Once used, I found that there was a problem with the customization, I forked and changed a bit to make it better.",
+        "website": "https://github.com/nWidart/laravel-modules"
+      },
+      {
+        "name": "Laravel CORS",
+        "start": "2019-09-13",
+        "end": "2019-09-13",
+        "tagline": "Simple to send CORS headers in a Laravel application",
+        "description": "I created it for personal projects. This package will add CORS headers to the responses of your Laravel or Lumen app.",
+        "website": "https://github.com/hungthai1401/laravel-cors"
+      },
+      {
+        "name": "Laravel SQL Logger",
+        "start": "2019-08-13",
+        "end": "2019-11-07",
+        "tagline": "Simple SQL logger",
+        "description": "I write it for both current work and personal projects. It helps SQL query logging to make watching and maintain easier.",
+        "website": "https://github.com/hungthai1401/laravel-sql-logger"
+      }
+    ]
+  },
   "employment": {
     "display": true,
     "items": [
-    {
-      "name": "Viet Nhat General Joint Stock Company (VINICORP)",
-      "start": "2017-02-20",
-      "location": "14F, ICON4 TOWER, 243A La Thanh St., Lang Thuong, Dong Da, Ha Noi, Viet Nam",
-      "position": "Teamleader",
-      "description": "Will serve as instructor for three units of Integrated English at varying levels. Additionally, will instruct the Academic Presentations course.",
-      "website": "http://www.vinicorp.com.vn",
-      "coursework": [
-        {
-          "name": "Developer",
-          "number": "(Feb 2017 - Feb 2018)",
-          "description": [
-            "Receive and do the assigned tasks from teamlead"
-          ]
-        },
-        {
-          "name": "Subteam leader",
-          "number": "(Mar 2018 - Oct 2018)",
-          "description": [
-            "Receive and do the assigned tasks from teamlead",
-            "Code reviews for the subteam"
-          ]
-        },
-        {
-          "name": "Team leader",
-          "number": "(Oct 2018 - Now)",
-          "description": [
-            "Research and apply the technology needed to the project",
-            "Code reviews for the team"
-          ]
-        }
-      ]
-    },
-    {
-      "name": "RED SUN SYNTHESIS PTE LTD",
-      "start": "2016-02-15",
-      "end": "2016-08-20",
-      "location": "C82 Truc Street, Xuan Quan, Van Giang, Hung Yen, Viet Nam",
-      "position": "Techical support",
-      "description": "Consulting, technical support and set up for HF wave communication solutions",
-      "website": "http://redsun-synthesis.com/vn",
-      "coursework": []
-    }
-  ]},
+      {
+        "name": "Viet Nhat General Joint Stock Company (VINICORP)",
+        "start": "2017-02-20",
+        "location": "14F, ICON4 TOWER, 243A La Thanh St., Lang Thuong, Dong Da, Ha Noi, Viet Nam",
+        "position": "Teamleader",
+        "description": "Analyze, develop and optimize web applications for Japanese partners",
+        "website": "http://www.vinicorp.com.vn",
+        "coursework": [
+          {
+            "name": "Developer",
+            "number": "(Feb 2017 - Feb 2018)",
+            "description": ["Receive and do the assigned tasks from teamlead"]
+          },
+          {
+            "name": "Subteam leader",
+            "number": "(Mar 2018 - Oct 2018)",
+            "description": [
+              "Receive and do the assigned tasks from teamlead",
+              "Code reviews for the subteam"
+            ]
+          },
+          {
+            "name": "Team leader",
+            "number": "(Oct 2018 - Now)",
+            "description": [
+              "Research and apply the technology needed to the project",
+              "Code reviews for the team"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "RED SUN SYNTHESIS PTE LTD",
+        "start": "2016-02-15",
+        "end": "2016-08-20",
+        "location": "C82 Truc Street, Xuan Quan, Van Giang, Hung Yen, Viet Nam",
+        "position": "Techical support",
+        "description": "Consulting, technical support and set up for HF wave communication solutions",
+        "website": "http://redsun-synthesis.com/vn",
+        "coursework": []
+      }
+    ]
+  },
   "education": {
     "display": true,
     "items": [
-    {
-      "name": "Hanoi University of Science & Technology (HUST)",
-      "end": "2010-10-01",
-      "start": "2015-08-10",
-      "location": "1st Đai Co Viet Street, Hai Ba Trung District, Ha Noi",
-      "degree": "Engineer",
-      "major": "Electronics and telecommunications",
-      "website": "http://hust.edu.vn",
-      "description": "One year towards a Master's degree. Coursework focused on proper investigation methods, critical examination of evidence and research"
-    },
-    {
-      "name": "TechMaster Vietnam Ltd",
-      "end": "2016-09-05",
-      "start": "2017-02-19",
-      "location": "Nguyen Đinh Chieu Street, Hai Ba Trung District, Ha Noi, Viet Nam",
-      "degree": "Trainee",
-      "major": "Web developer",
-      "website": "https://techmaster.vn",
-      "description": "Full-time trainee PHP web developer"
-    }
-  ]}
+      {
+        "name": "Hanoi University of Science & Technology (HUST)",
+        "end": "2010-10-01",
+        "start": "2015-08-10",
+        "location": "1st Đai Co Viet Street, Hai Ba Trung District, Ha Noi",
+        "degree": "Engineer",
+        "major": "Electronics and telecommunications",
+        "website": "http://hust.edu.vn",
+        "description": "Learn how to design an IC, how to work the antenna"
+      },
+      {
+        "name": "TechMaster Vietnam Ltd",
+        "end": "2016-09-05",
+        "start": "2017-02-19",
+        "location": "Nguyen Đinh Chieu Street, Hai Ba Trung District, Ha Noi, Viet Nam",
+        "degree": "Trainee",
+        "major": "Web developer",
+        "website": "https://techmaster.vn",
+        "description": "Full-time trainee PHP web developer"
+      }
+    ]
+  }
 }
