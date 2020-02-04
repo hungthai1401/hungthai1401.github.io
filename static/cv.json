@@ -116,12 +116,19 @@
     "display": true,
     "items": [
       {
+        "name": "Laravel Application Version",
+        "start": "2020-01-20",
+        "end": "2020-01-20",
+        "tagline": "Author",
+        "description": "I write it current work. It helps I can find application version in Google Play store by package name or Apple App Store by bundle id.",
+        "website": "https://github.com/hungthai1401/laravel-application-version"
+      },
+      {
         "name": "HD",
         "start": "2019-12-17",
         "end": "2020-01-20",
-        "tagline": "Simple accessories management application",
-        "description": "After learning about Dart and Flutter in a short time, I built this application to learn and improve my skills. I am trying to put it on the Google Play Store and App Store.",
-        "website": ""
+        "tagline": "Author",
+        "description": "After learning about Dart and Flutter in a short time, I built this application to manager accessories. I am trying to put it on the Google Play Store and App Store."
       },
       {
         "name": "Laravel Modules",
@@ -135,7 +142,7 @@
         "name": "Laravel CORS",
         "start": "2019-09-13",
         "end": "2019-09-13",
-        "tagline": "Simple to send CORS headers in a Laravel application",
+        "tagline": "Author",
         "description": "I created it for personal projects. This package will add CORS headers to the responses of your Laravel or Lumen app.",
         "website": "https://github.com/hungthai1401/laravel-cors"
       },
@@ -143,7 +150,7 @@
         "name": "Laravel SQL Logger",
         "start": "2019-08-13",
         "end": "2019-11-07",
-        "tagline": "Simple SQL logger",
+        "tagline": "Author",
         "description": "I write it for both current work and personal projects. It helps SQL query logging to make watching and maintain easier.",
         "website": "https://github.com/hungthai1401/laravel-sql-logger"
       }
@@ -199,16 +206,6 @@
     "display": true,
     "items": [
       {
-        "name": "Hanoi University of Science & Technology (HUST)",
-        "end": "2010-10-01",
-        "start": "2015-08-10",
-        "location": "1st Đai Co Viet Street, Hai Ba Trung District, Ha Noi",
-        "degree": "Engineer",
-        "major": "Electronics and telecommunications",
-        "website": "http://hust.edu.vn",
-        "description": "Learn how to design an IC, how to work the antenna"
-      },
-      {
         "name": "TechMaster Vietnam Ltd",
         "end": "2016-09-05",
         "start": "2017-02-19",
@@ -217,6 +214,16 @@
         "major": "Web developer",
         "website": "https://techmaster.vn",
         "description": "Full-time trainee PHP web developer"
+      },
+      {
+        "name": "Hanoi University of Science & Technology (HUST)",
+        "end": "2010-10-01",
+        "start": "2015-08-10",
+        "location": "1st Đai Co Viet Street, Hai Ba Trung District, Ha Noi",
+        "degree": "Engineer",
+        "major": "Electronics and telecommunications",
+        "website": "http://hust.edu.vn",
+        "description": "Learn how to design an IC, how to work the antenna"
       }
     ]
   }
