@@ -4,9 +4,6 @@ on:
   # Manual trigger
   workflow_dispatch:
   
-  # Scheduled updates (daily at midnight)
-  schedule:
-  
   # When the resume repository is updated
   repository_dispatch:
     types: [resume_updated]
