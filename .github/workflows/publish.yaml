@@ -1,0 +1,40 @@
+name: Update Resume Submodule
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+  
+  # Scheduled updates (daily at midnight)
+  schedule:
+  
+  # When the resume repository is updated
+  repository_dispatch:
+    types: [resume_updated]
+
+jobs:
+  update-submodule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      
+      - name: Configure Git
+        run: |
+          git config user.name 'Thai Nguyen Hung'
+          git config user.email 'hungthai1401.it@gmail.com'
+      
+      - name: Update resume submodule
+        run: |
+          git submodule update --remote resume
+          if [[ -n $(git status -s) ]]; then
+            git add resume
+            git commit -m "chore: update resume submodule to latest gh-pages branch"
+            git push origin
+            echo "Submodule updated successfully"
+          else
+            echo "No changes in the submodule"
+          fi
