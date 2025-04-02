@@ -23,7 +23,7 @@ module.exports = {
   ],
   themeConfig: {
     nav: [
-      { text: 'Resume', link: '/resume', outLink: false, newWindow: false },
+      { text: 'Resume', link: '/resume', outLink: true, newWindow: false },
     ],
     copyright: 'Copyright 2010-2024 Thai Nguyen Hung all rights reserved.',
     github: 'hungthai1401',
