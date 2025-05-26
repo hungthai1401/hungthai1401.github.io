@@ -11,7 +11,8 @@
   },
   "scripts": {
     "dev": "vuepress dev .",
-    "build": "vuepress build ."
+    "build": "vuepress build .",
+    "publish": "npm run build && mkdir -p .vuepress/dist/resume && cp -r resume/* .vuepress/dist/resume"
   },
   "dependencies": {
     "cross-env": "^7.0.3",
