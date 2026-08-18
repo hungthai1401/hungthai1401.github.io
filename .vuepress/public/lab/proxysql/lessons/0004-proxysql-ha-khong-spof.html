@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 4: Làm cho chính ProxySQL không phải điểm chết</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0003-lab-cai-va-cau-hinh-proxysql.html">Lesson 0003</a> ·
+    Lesson 0004 ·
+    <a href="../reference/0004-proxysql-ha-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0004</p>
+  <h1>Làm cho chính ProxySQL không phải điểm chết</h1>
+  <p><em>~12 phút đọc + quiz. Ở Lesson 3 bạn đã có 1 ProxySQL route đúng read/write. Nhưng nếu node ProxySQL đó chết, toàn bộ ứng dụng mất kết nối database — dù MySQL bên dưới vẫn sống khoẻ. Đây chính là gạch cuối cùng trong "Success looks like" của mission bạn: proxy layer không phải single point of failure.</em></p>
+
+  <h2>Sự thật khó chịu cần biết trước</h2>
+  <p><strong>ProxySQL không tự có cơ chế HA cho traffic client.</strong> ProxySQL Cluster (đã nói ở Lesson 1) chỉ đồng bộ <em>config</em> — users, query rules, server list — giống nhau giữa các node. Nó không cấp một địa chỉ IP chung, không tự chuyển connection từ node chết sang node sống. Hai việc này hoàn toàn độc lập, và bạn cần làm cả hai:</p>
+  <ol>
+    <li><strong>Đồng bộ config</strong> giữa nhiều node ProxySQL → ProxySQL Cluster (native, đã học sơ ở Lesson 1)</li>
+    <li><strong>Client luôn trỏ vào node còn sống</strong> → cần thêm một lớp network riêng: Keepalived + VIP (phổ biến nhất), hoặc load balancer/DNS nếu hạ tầng của bạn đã có sẵn</li>
+  </ol>
+
+  <h2>Keepalived + VIP hoạt động thế nào</h2>
+  <p>Keepalived dùng protocol VRRP: nhiều node ProxySQL "tranh nhau" giữ một địa chỉ IP ảo (VIP) dựa trên <code>priority</code> đặt trong config. Node priority cao nhất còn sống giữ VIP. Application luôn kết nối vào VIP, <strong>không bao giờ</strong> trỏ trực tiếp vào IP thật của một node ProxySQL cụ thể. Khi node đang giữ VIP chết (health check thất bại — thường chỉ là kiểm tra process ProxySQL còn sống), VRRP chuyển VIP sang node ưu tiên kế tiếp trong vài giây.</p>
+  <p>Số liệu thực tế (benchmark của Marco Tusa/Percona): worst-case recovery ~5 giây với health check interval 2 giây — phần lớn thời gian đó chính là thời gian chờ giữa các lần check, không phải overhead của Keepalived.</p>
+
+  <h2>Ba pattern kiến trúc — bạn cần chọn 1</h2>
+  <table>
+    <thead><tr><th>Pattern</th><th>Đánh đổi</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Tile</strong> (ProxySQL local trên mỗi app server)</td><td>Ít network hop nhất, nhưng nếu có hàng trăm app server, MySQL bị hàng trăm ProxySQL cùng ping liên tục — tự làm hại chính mình</td></tr>
+      <tr><td><strong>Single VIP</strong> (active-passive)</td><td>Đơn giản nhất, chỉ 1 node nhận traffic lúc bất kỳ — capacity của các node backup bị "phí" lúc bình thường. <strong>Lựa chọn mặc định</strong> trừ khi có lý do cụ thể để phức tạp hơn</td></tr>
+      <tr><td><strong>Multi-VIP</strong> (active-active)</td><td>Tận dụng hết capacity mọi node, nhưng cấu hình phức tạp hơn (nhiều VRRP instance, phải cẩn thận không trùng IP)</td></tr>
+    </tbody>
+  </table>
+  <p>Vì mission của bạn là mission-critical nhưng bạn chưa có traffic thật để đo, <strong>bắt đầu với Single VIP</strong> là lựa chọn hợp lý — nó đơn giản để vận hành và dễ debug khi có sự cố, đúng theo nguyên tắc KISS mà tài liệu gốc nhấn mạnh.</p>
+
+  <h2>Toàn cảnh stack HA hoàn chỉnh</h2>
+  <pre><code>Application
+   |
+   v  (luôn trỏ vào VIP, không trỏ IP node cụ thể)
+[VIP — quản lý bởi Keepalived]
+   |
+   v
+ProxySQL node 1 &lt;--ProxySQL Cluster (sync config)--&gt; node 2 &lt;---&gt; node 3
+   |                            |                            |
+   v                            v                            v
+      MySQL backend (Async / Group Replication / Galera — Lesson 2)</code></pre>
+  <p>Nhìn kỹ: đây là <strong>hai lớp HA độc lập, xếp lên nhau</strong>. Lớp dưới (MySQL) đã được bạn quyết định ở Lesson 2. Lớp trên (ProxySQL + Keepalived) là chủ đề của lesson này. Một hệ thống mission-critical thật cần <em>cả hai</em> lớp đều không SPOF — thiếu 1 trong 2 là bạn vẫn còn một điểm chết duy nhất, chỉ là đổi vị trí.</p>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p><a href="https://dzone.com/articles/setting-up-proxysql-for-high-availability-no-singl">Marco Tusa (Percona): Setting Up ProxySQL for High Availability</a> — bài viết gốc, có số liệu recovery time đo thật và cấu hình Keepalived đầy đủ cho cả 3 pattern. <a href="https://www.proxysql.com/documentation/proxysql-cluster/cluster-commands/">ProxySQL: Cluster Commands</a> cho phần đồng bộ config. Toàn bộ nguồn trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="1">
+    <p class="quiz-question">1. ProxySQL Cluster (native) giải quyết vấn đề gì?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Cấp một VIP chung cho client</button></li>
+      <li><button class="quiz-option">Đồng bộ config giữa các node</button></li>
+      <li><button class="quiz-option">Tự chuyển connection khi node chết</button></li>
+      <li><button class="quiz-option">Tự cân bằng tải giữa các node</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">2. Trong pattern Single VIP với Keepalived, application nên kết nối vào đâu?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Địa chỉ IP ảo (VIP) chung</button></li>
+      <li><button class="quiz-option">IP thật của node ưu tiên cao nhất</button></li>
+      <li><button class="quiz-option">IP thật của mọi node, xoay vòng</button></li>
+      <li><button class="quiz-option">Hostname nội bộ của MySQL primary</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="2">
+    <p class="quiz-question">3. Pattern "Tile" (ProxySQL local trên mỗi app server) có rủi ro cụ thể nào khi số app server lên tới hàng trăm?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">VIP bị trùng địa chỉ giữa các node</button></li>
+      <li><button class="quiz-option">ProxySQL Cluster không đồng bộ được</button></li>
+      <li><button class="quiz-option">MySQL bị hàng trăm ProxySQL ping liên tục</button></li>
+      <li><button class="quiz-option">Query rule chạy sai thứ tự rule_id</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    Nếu bạn muốn lab thử Keepalived thật (cần 3 VM/container có network riêng, phức tạp hơn lab Docker ở Lesson 3), nói cho tôi biết, tôi sẽ dựng lab riêng cho phần này. Nếu không, lesson tiếp theo có thể chuyển sang phần vận hành: monitor ProxySQL trên production, và cách đổi config an toàn không gây downtime.
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

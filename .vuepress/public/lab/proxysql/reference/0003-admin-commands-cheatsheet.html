@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: ProxySQL Admin interface — bảng và lệnh cốt lõi</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0003</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>ProxySQL Admin interface — bảng và lệnh cốt lõi</h1>
+
+  <h2>Kết nối Admin interface</h2>
+  <pre><code>mysql -u admin -padmin -h 127.0.0.1 -P 6032 --prompt 'ProxySQL Admin&gt; '</code></pre>
+  <p>Đây là một MySQL server "giả" — bạn dùng SQL để đọc/sửa config, không phải config file.</p>
+
+  <h2>3 lớp config — nhớ thứ tự này</h2>
+  <table>
+    <thead><tr><th>Lớp</th><th>Ý nghĩa</th><th>Lệnh chuyển sang lớp kế</th></tr></thead>
+    <tbody>
+      <tr><td>Bảng chính (ví dụ <code>mysql_servers</code>)</td><td>Bộ nhớ tạm, bạn sửa ở đây trước</td><td><code>LOAD ... TO RUNTIME</code></td></tr>
+      <tr><td><code>runtime_*</code> (ví dụ <code>runtime_mysql_servers</code>)</td><td>Config đang thực sự chạy</td><td><code>SAVE ... TO DISK</code></td></tr>
+      <tr><td><code>disk.*</code> (SQLite)</td><td>Config persist, sống sót qua restart</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Quy tắc sống còn</span>Sửa bảng chính mà quên <code>LOAD ... TO RUNTIME</code> → không có gì đổi thật. Load runtime mà quên <code>SAVE ... TO DISK</code> → restart process là mất hết, phải làm lại.</p>
+
+  <h2>Setup lần đầu — trình tự chuẩn</h2>
+  <pre><code>-- 1. Thêm backend server vào hostgroup
+INSERT INTO mysql_servers(hostgroup_id,hostname,port) VALUES (1,'10.0.0.1',3306); -- writer
+INSERT INTO mysql_servers(hostgroup_id,hostname,port) VALUES (2,'10.0.0.2',3306); -- reader
+
+-- 2. Cấu hình monitor user (phải tồn tại thật trên MySQL, có quyền REPLICATION CLIENT)
+UPDATE global_variables SET variable_value='monitor' WHERE variable_name='mysql-monitor_username';
+UPDATE global_variables SET variable_value='monitor' WHERE variable_name='mysql-monitor_password';
+LOAD MYSQL VARIABLES TO RUNTIME;
+SAVE MYSQL VARIABLES TO DISK;
+
+-- 3. Khai báo hostgroup nào là writer/reader theo read_only (Async Replication)
+INSERT INTO mysql_replication_hostgroups (writer_hostgroup,reader_hostgroup,comment)
+  VALUES (1,2,'cluster1');
+
+-- 4. Load server + xác nhận monitor hoạt động
+LOAD MYSQL SERVERS TO RUNTIME;
+SELECT * FROM monitor.mysql_server_read_only_log ORDER BY time_start_us DESC LIMIT 5;
+
+-- 5. Thêm user cho application
+INSERT INTO mysql_users(username,password,default_hostgroup) VALUES ('appuser','apppass',1);
+LOAD MYSQL USERS TO RUNTIME;
+SAVE MYSQL USERS TO DISK;
+
+-- 6. Query rule: route SELECT sang reader hostgroup (2), còn lại theo default_hostgroup (1)
+INSERT INTO mysql_query_rules (rule_id,active,match_digest,destination_hostgroup,apply)
+  VALUES (1,1,'^SELECT.*FOR UPDATE$',1,1);   -- SELECT...FOR UPDATE vẫn phải ra writer
+INSERT INTO mysql_query_rules (rule_id,active,match_digest,destination_hostgroup,apply)
+  VALUES (2,1,'^SELECT',2,1);                -- SELECT thường ra reader
+LOAD MYSQL QUERY RULES TO RUNTIME;
+SAVE MYSQL QUERY RULES TO DISK;
+
+-- 7. Lưu toàn bộ server config xuống disk
+SAVE MYSQL SERVERS TO DISK;</code></pre>
+  <p class="callout"><span class="callout-label">Bẫy thường gặp</span>Query rules được đánh giá theo <code>rule_id</code> tăng dần, và <code>apply=1</code> nghĩa là dừng luôn, không xét rule tiếp theo. Rule nào cần ưu tiên (như chặn <code>SELECT...FOR UPDATE</code> ra writer) phải có <code>rule_id</code> nhỏ hơn.</p>
+
+  <h2>Bảng cần nhớ</h2>
+  <table>
+    <thead><tr><th>Bảng</th><th>Dùng cho</th></tr></thead>
+    <tbody>
+      <tr><td><code>mysql_servers</code></td><td>Backend server + hostgroup nào</td></tr>
+      <tr><td><code>mysql_replication_hostgroups</code></td><td>Async/Semisync — map writer/reader hostgroup theo <code>read_only</code></td></tr>
+      <tr><td><code>mysql_group_replication_hostgroups</code></td><td>Group Replication — xem Reference 0002</td></tr>
+      <tr><td><code>mysql_galera_hostgroups</code></td><td>Galera/PXC — xem Reference 0002</td></tr>
+      <tr><td><code>mysql_users</code></td><td>User application, <code>default_hostgroup</code> route mặc định</td></tr>
+      <tr><td><code>mysql_query_rules</code></td><td>Route theo nội dung query, rewrite, cache, block</td></tr>
+      <tr><td><code>global_variables</code></td><td>Toàn bộ config runtime (monitor user, timeout, listen port...)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Kiểm tra sức khoẻ nhanh</h2>
+  <pre><code>SELECT * FROM stats_mysql_connection_pool;         -- connection/traffic theo hostgroup
+SELECT * FROM stats_mysql_query_digest LIMIT 10;    -- query nào chạy, hostgroup nào nhận
+SELECT * FROM monitor.mysql_server_ping_log
+  ORDER BY time_start_us DESC LIMIT 5;              -- backend còn sống không</code></pre>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://proxysql.com/documentation/proxysql-configuration/">ProxySQL: How to Configure ProxySQL for MySQL for the First Time</a>.
+    Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+</main>
+</body>
+</html>

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: Kiến trúc ProxySQL</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+  .term { font-weight: 600; }
+</style>
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0001</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>Kiến trúc ProxySQL</h1>
+  <p>Bản nén các khái niệm lõi. Dùng để tra cứu nhanh khi cấu hình, không phải để đọc tuyến tính.</p>
+
+  <h2>Threading model</h2>
+  <div class="grid-2">
+    <div>
+      <p><span class="term">MySQL Worker Threads</span> — xử lý phần lớn traffic client: auth, parse query, relay kết quả.</p>
+      <p><span class="term">Admin Thread</span> — cổng quản trị, port 6032 (protocol MySQL) và 6132 (protocol PgSQL).</p>
+    </div>
+    <div>
+      <p><span class="term">Monitor Threads</span> — ping backend liên tục, kiểm tra kết nối, đo replication lag.</p>
+      <p><span class="term">Cluster Threads</span> — đồng bộ config giữa các node ProxySQL (chỉ khi dùng ProxySQL Cluster).</p>
+    </div>
+  </div>
+
+  <h2>Core components</h2>
+  <p><span class="term">Hostgroups Manager</span> — nhóm các backend MySQL theo vai trò (writer/reader...). Mỗi hostgroup giữ pool connection riêng, có multiplexing (nhiều session frontend dùng chung ít connection backend) và tự route theo trạng thái <code>read_only</code>.</p>
+  <p><span class="term">Query Processor</span> — "bộ não": với mỗi query quyết định route đi đâu, có rewrite không, có cache không, có block không.</p>
+  <p><span class="term">Query Digest</span> — fingerprint hoá query (bỏ giá trị cụ thể) để match rule và thống kê hiệu quả.</p>
+
+  <h2>Data flow (một query)</h2>
+  <pre>Client → Worker Thread → Query Processor (match rule, check cache)
+       → Hostgroups Manager (lấy connection đúng hostgroup)
+       → Backend MySQL → trả kết quả ngược lại Client</pre>
+
+  <h2>Vì sao "maximum uptime"</h2>
+  <ul>
+    <li>Đổi config qua Admin interface áp dụng runtime, <strong>không cần restart</strong>.</li>
+    <li>Config lưu trong SQLite nội bộ, tách <code>disk</code> (persist) và <code>runtime</code> (đang chạy) — có thể test trước khi <code>LOAD ... TO RUNTIME</code>.</li>
+    <li>"Angel process" tự giám sát và restart ProxySQL nếu crash.</li>
+    <li>Hỗ trợ cascade: <code>App → P1 → {P2,P3,P4} → {B1,B2,B3}</code> — nhiều tầng proxy chịu lỗi cho nhau.</li>
+  </ul>
+
+  <h2>ProxySQL Cluster (HA cho chính tầng proxy)</h2>
+  <table>
+    <thead><tr><th>Khái niệm</th><th>Ý nghĩa</th></tr></thead>
+    <tbody>
+      <tr><td>Core node</td><td>Giữ "Source of Truth", được liệt kê tường minh trong <code>proxysql_servers</code> của nhau, tự propagate thay đổi.</td></tr>
+      <tr><td>Satellite node</td><td>Chỉ pull config từ Core node, không propagate.</td></tr>
+      <tr><td>Cơ chế sync</td><td>Pull-based, kích hoạt khi lệch checksum. Có grace period (<code>diffs_before_sync</code>) để tránh sync do mất mạng tạm thời.</td></tr>
+      <tr><td>Được đồng bộ</td><td>Global variables, MySQL servers/hostgroups, MySQL users, query rules, danh sách proxysql_servers.</td></tr>
+      <tr><td>Theo dõi cluster</td><td><code>stats_proxysql_servers_checksums</code>, <code>stats_proxysql_servers_metrics</code>, <code>runtime_checksums_values</code>.</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Lưu ý HA</span>ProxySQL Cluster đồng bộ config giữa các node ProxySQL — nó <strong>không</strong> tự cấp một VIP cho client kết nối vào. Muốn client luôn trỏ vào node ProxySQL còn sống, vẫn cần thêm cơ chế failover ở tầng network (Keepalived + VIP, load balancer, hoặc DNS-based) phía trước cluster.</p>
+
+  <h2>So sánh nhanh 3 proxy (theo benchmark Percona 2023)</h2>
+  <table>
+    <thead><tr><th></th><th>HAProxy</th><th>ProxySQL</th><th>MySQL Router</th></tr></thead>
+    <tbody>
+      <tr><td>Nhận thức protocol MySQL (L7)</td><td>Không</td><td>Có</td><td>Có</td></tr>
+      <tr><td>Connection multiplexing</td><td>Không</td><td>Có</td><td>Hạn chế</td></tr>
+      <tr><td>CPU dùng khi tải cao</td><td>Thấp nhất</td><td>Trung bình</td><td>Cao nhất, saturate sớm</td></tr>
+      <tr><td>Throughput khi query load cao</td><td>Cao nhất</td><td>Khá, rồi collapse ở mức tải rất cao</td><td>Thấp nhất, không "cất cánh"</td></tr>
+      <tr><td>Query rules / rewrite / cache</td><td>Không</td><td>Có</td><td>Không</td></tr>
+      <tr><td>Khuyên dùng khi</td><td>Cần raw throughput, resource-constrained (ví dụ trong K8s Operator pod)</td><td>Cần read/write split thông minh, query-level control, connection pooling mạnh</td><td>Đi kèm InnoDB Cluster, quy mô nhỏ</td></tr>
+    </tbody>
+  </table>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://proxysql.com/documentation/architecture/">ProxySQL Architecture Overview</a>,
+    <a href="https://proxysql.com/documentation/design-goals/">ProxySQL Design Goals</a>,
+    <a href="https://www.proxysql.com/documentation/proxysql-cluster/">ProxySQL Cluster</a>,
+    <a href="https://www.percona.com/blog/comparisons-of-proxies-for-mysql/">Percona: Comparisons of Proxies for MySQL</a>.
+    Xem đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+</main>
+</body>
+</html>

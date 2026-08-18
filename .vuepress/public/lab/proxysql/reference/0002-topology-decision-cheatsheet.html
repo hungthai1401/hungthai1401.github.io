@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: Chọn topology MySQL + hostgroups tương ứng trong ProxySQL</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0002</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>Chọn topology MySQL + hostgroups tương ứng trong ProxySQL</h1>
+
+  <h2>Bốn kiểu replication (theo MariaDB docs)</h2>
+  <table>
+    <thead><tr><th>Kiểu</th><th>Write perf</th><th>Mất dữ liệu khi crash</th><th>Auto failover</th><th>Hợp với</th></tr></thead>
+    <tbody>
+      <tr><td>Async (Primary-Replica)</td><td>Nhanh nhất</td><td>Rủi ro cao</td><td>Không (cần tool ngoài)</td><td>Read-scaling, DR ở xa</td></tr>
+      <tr><td>Semisync</td><td>Nhanh (chờ 1 replica)</td><td>Rủi ro thấp</td><td>Không (cần tool ngoài)</td><td>Cần an toàn dữ liệu vừa phải</td></tr>
+      <tr><td>Galera/PXC (virtually sync)</td><td>Chậm nhất — bị chặn bởi node chậm nhất</td><td>Zero data loss</td><td>Có, built-in</td><td>HA trong 1 datacenter, cần multi-primary</td></tr>
+      <tr><td>Group Replication</td><td>Nhanh/vừa (Paxos)</td><td>Zero data loss (majority)</td><td>Có, built-in</td><td>HA đa AZ/vùng, chịu latency mạng tốt hơn Galera</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Quick decision</h2>
+  <ul>
+    <li><strong>Một datacenter, latency &lt;1ms, cần multi-primary thật (nhiều node nhận write đồng thời)</strong> → Galera/PXC.</li>
+    <li><strong>Nhiều AZ/vùng, latency dao động, ưu tiên ổn định khi mạng chập chờn</strong> → Group Replication (single-primary mode) — Paxos xử lý latency biến động tốt hơn Galera (nguồn: JusDB, quan sát thực tế một khách hàng chuyển từ Galera → GR để hết split-brain).</li>
+    <li><strong>Chỉ cần read-scaling, chấp nhận có replication lag, có tool failover riêng (orchestrator/MHA)</strong> → Async Replication + ProxySQL đọc <code>read_only</code>.</li>
+    <li><strong>Multi-datacenter thật (WAN, cách xa)</strong> → Hybrid: Galera/GR cho HA local + Async/semisync sang site DR.</li>
+  </ul>
+  <p class="callout"><span class="callout-label">Cảnh báo quorum</span>Galera cần số node lẻ (3, 5...) hoặc thêm Galera Arbitrator (garbd) cho cluster số node chẵn — thiếu quorum thì network partition có thể gây split-brain thật (cả hai phía nghĩ mình là primary).</p>
+
+  <h2>ProxySQL nhìn thấy topology như thế nào</h2>
+  <p>ProxySQL có 3 cơ chế monitor tương ứng 3 kiểu topology, và cả 3 dùng cấu trúc hostgroup gần giống nhau:</p>
+
+  <h3>Async Replication → <code>mysql_replication_hostgroups</code></h3>
+  <p>Đơn giản nhất: 1 writer hostgroup, 1 reader hostgroup. ProxySQL đọc cờ <code>read_only</code> trên mỗi node — <code>read_only=0</code> vào writer hostgroup, <code>read_only=1</code> vào reader hostgroup. Không có failover tự động ở tầng MySQL — nếu writer chết, cần tool ngoài (orchestrator, MHA) đổi <code>read_only</code> trên node mới, ProxySQL sẽ tự nhận ra.</p>
+
+  <h3>Group Replication → <code>mysql_group_replication_hostgroups</code></h3>
+  <table>
+    <thead><tr><th>Cột</th><th>Ý nghĩa</th></tr></thead>
+    <tbody>
+      <tr><td><code>writer_hostgroup</code></td><td>Node có <code>read_only=0</code>, tối đa <code>max_writers</code> node.</td></tr>
+      <tr><td><code>backup_writer_hostgroup</code></td><td>Writer vượt quá <code>max_writers</code> bị đẩy vào đây.</td></tr>
+      <tr><td><code>reader_hostgroup</code></td><td>Node có <code>read_only=1</code>.</td></tr>
+      <tr><td><code>offline_hostgroup</code></td><td>Node bị đánh <code>OFFLINE</code> hoặc không phải <code>viable_candidate</code> (không ở primary partition — chống route vào node bị split-brain).</td></tr>
+      <tr><td><code>max_transactions_behind</code></td><td>Ngưỡng lag (transaction) trước khi SHUN node để tránh stale read.</td></tr>
+      <tr><td><code>writer_is_also_reader</code></td><td>0/1/2 — writer có nhận luôn read traffic không.</td></tr>
+    </tbody>
+  </table>
+  <p>Từ <code>v2.6.0</code>: autodiscovery — chỉ cần khai 1 node, ProxySQL tự tìm các replica còn lại qua <code>performance_schema.replication_group_members</code>.</p>
+
+  <h3>Galera/PXC → <code>mysql_galera_hostgroups</code></h3>
+  <p>Cấu trúc bảng <strong>giống hệt</strong> <code>mysql_group_replication_hostgroups</code> (cùng 4 hostgroup: writer/backup_writer/reader/offline). Khác ở tiêu chí monitor: ProxySQL kiểm tra thêm <code>wsrep_cluster_status == PRIMARY</code>, <code>wsrep_local_state == 4 (SYNCED)</code>, <code>wsrep_desync</code>, trạng thái DONOR trong SST — không chỉ riêng <code>read_only</code>.</p>
+
+  <h2>Điểm cần nhớ</h2>
+  <p>Vì cấu trúc hostgroup cho Group Replication và Galera gần như giống nhau trong ProxySQL, việc bạn <strong>chọn topology sớm</strong> không khoá bạn quá chặt vào một cách cấu hình ProxySQL khác biệt — phần lớn khác biệt nằm ở chỗ MySQL-side (Paxos vs wsrep), không phải ở cách bạn viết query rules.</p>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://mariadb.com/docs/server/ha-and-performance/standard-replication/choosing-a-replication-strategy">MariaDB: Choosing a Replication Strategy</a>,
+    <a href="https://proxysql.com/documentation/group-replication-configuration/">ProxySQL: Group Replication Configuration</a>,
+    <a href="https://proxysql.com/documentation/galera-configuration/">ProxySQL: Galera Configuration</a>,
+    <a href="https://www.jusdb.com/blog/mysql-group-replication-vs-galera-cluster-2025">JusDB: Group Replication vs Galera 2025</a>.
+    Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+</main>
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 10: ProxySQL cho PostgreSQL</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0009-lab-quan-sat-connection-pool.html">Lesson 0009</a> ·
+    Lesson 0010 ·
+    <a href="../reference/0009-proxysql-postgresql-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0010</p>
+  <h1>ProxySQL cho PostgreSQL</h1>
+  <p><em>~12 phút đọc + quiz. Mission của bạn vừa mở rộng: hệ thống thật có cả MySQL và PostgreSQL. Tin tốt — bạn không học lại từ đầu. Tin cần cẩn trọng — module này rất mới, có vài điểm "còn non" phải biết trước khi đưa vào production.</em></p>
+
+  <h2>Mọi khái niệm bạn đã học vẫn đúng — chỉ đổi tên bảng</h2>
+  <p>ProxySQL thêm hỗ trợ PostgreSQL từ bản 3.0 (tháng 9/2024), dùng lại đúng kiến trúc multi-layer config, multiplexing, monitor module, query rules, hostgroups mà bạn đã học ở Lesson 1-9 cho MySQL — chỉ đổi tiền tố bảng từ <code>mysql_</code> sang <code>pgsql_</code>, và đổi port:</p>
+  <table>
+    <thead><tr><th>MySQL (đã học)</th><th>PostgreSQL</th></tr></thead>
+    <tbody>
+      <tr><td><code>mysql_servers</code> / <code>mysql_users</code> / <code>mysql_query_rules</code></td><td><code>pgsql_servers</code> / <code>pgsql_users</code> / <code>pgsql_query_rules</code></td></tr>
+      <tr><td><code>mysql_replication_hostgroups</code> (Lesson 2)</td><td><code>pgsql_replication_hostgroups</code></td></tr>
+      <tr><td>Admin 6032, data 6033, client <code>mysql</code></td><td>Admin <strong>6132</strong>, data <strong>6133</strong>, client <code>psql</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Setup — song song đúng 4 bước của Lesson 3</h2>
+  <pre><code>-- 1. Thêm backend
+INSERT INTO pgsql_servers (hostgroup_id, hostname, port) VALUES (0, '10.0.0.1', 5432);
+LOAD PGSQL SERVERS TO RUNTIME; SAVE PGSQL SERVERS TO DISK;
+
+-- 2. Monitor user (tạo trên PostgreSQL trước, xem gotcha dưới)
+UPDATE global_variables SET variable_value='monitor' WHERE variable_name='pgsql-monitor_username';
+UPDATE global_variables SET variable_value='monitor' WHERE variable_name='pgsql-monitor_password';
+LOAD PGSQL VARIABLES TO RUNTIME; SAVE PGSQL VARIABLES TO DISK;
+
+-- 3. App user
+INSERT INTO pgsql_users (username, password, default_hostgroup) VALUES ('appuser','apppass',0);
+LOAD PGSQL USERS TO RUNTIME; SAVE PGSQL USERS TO DISK;
+
+-- 4. Connect thử qua ProxySQL
+psql -h 127.0.0.1 -p6133 -U appuser -d mydatabase</code></pre>
+  <p class="callout"><span class="callout-label">Gotcha khác MySQL</span>ProxySQL chưa cho đặt database riêng cho monitor user — phải tạo 1 database riêng trên PostgreSQL cho user này (ví dụ <code>proxymon</code>), không dùng chung app database. Tài liệu chính thức ghi rõ đây là hạn chế tạm thời, "likely to change in the near future".</p>
+
+  <h2>Read/write split tự động — vẫn dùng pg_is_in_recovery()</h2>
+  <p>Giống hệt tư duy <code>mysql_replication_hostgroups</code> ở Lesson 2: khai báo writer/reader hostgroup, ProxySQL tự kiểm tra role của từng server (qua <code>pg_is_in_recovery()</code> thay vì <code>read_only</code> của MySQL) và tự chuyển server sang hostgroup đúng khi role đổi — kể cả khi PostgreSQL failover/promote một replica lên primary.</p>
+  <pre><code>INSERT INTO pgsql_replication_hostgroups (writer_hostgroup, reader_hostgroup, check_type)
+  VALUES (0, 1, 'read_only');
+LOAD PGSQL SERVERS TO RUNTIME;</code></pre>
+
+  <h2>3 điểm "còn non" — đọc kỹ trước khi quyết định production</h2>
+  <p>Vì mission của bạn là mission-critical, đây là phần quan trọng nhất của lesson này — không phải để dọa bạn, mà để bạn quyết định đúng version tối thiểu cần dùng:</p>
+  <table>
+    <thead><tr><th>Vấn đề</th><th>Vì sao quan trọng</th></tr></thead>
+    <tbody>
+      <tr><td>Module chỉ mới từ 09/2024</td><td>So với MySQL module đã production-hardened từ ~2013, PostgreSQL module còn rất trẻ — ít case thực tế đã kiểm chứng hơn nhiều</td></tr>
+      <tr><td>Extended Query Protocol chỉ hỗ trợ từ <strong>3.0.4</strong></td><td>Driver PostgreSQL hiện đại (libpq, psycopg2, JDBC) <strong>mặc định</strong> dùng Extended Query Protocol (Parse/Bind/Execute nhiều bước) để chạy prepared statement. Bản ProxySQL trước 3.0.4 chỉ hiểu Simple Query — nghĩa là driver mặc định của bạn có thể không tương thích nếu dùng bản cũ hơn.</td></tr>
+      <tr><td>ProxySQL Cluster Sync cho PostgreSQL chỉ từ <strong>3.0.8</strong></td><td>Nếu bạn định dùng ProxySQL Cluster (Lesson 4) để đồng bộ config giữa nhiều node cho cả 2 engine, node PostgreSQL cần bản ≥3.0.8 để config tự đồng bộ — bản cũ hơn không tự sync phần pgsql_*.</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Việc cần làm ngay</span>Trước khi thiết kế sâu hơn cho PostgreSQL, kiểm tra <code>SELECT @@version;</code> trên ProxySQL bạn định dùng — đảm bảo ≥ 3.0.8 để có đủ cả Extended Query Protocol và Cluster Sync. Đừng giả định "ProxySQL support Postgres" nghĩa là mọi feature đều sẵn sàng như module MySQL.</p>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p><a href="https://proxysql.com/documentation/proxysql-configuration-postgresql/">ProxySQL: How to Configure ProxySQL for PostgreSQL for the first time</a> (nguồn chính, đầy đủ setup) và <a href="https://proxysql.com/documentation/postgresql-backend-monitoring/">ProxySQL: PostgreSQL Monitor Module</a> (chi tiết read-only detection). Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="1">
+    <p class="quiz-question">1. Bảng nào tương đương mysql_replication_hostgroups cho PostgreSQL?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">pgsql_servers</button></li>
+      <li><button class="quiz-option">pgsql_replication_hostgroups</button></li>
+      <li><button class="quiz-option">pgsql_query_rules</button></li>
+      <li><button class="quiz-option">stats_pgsql_connection_pool</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="2">
+    <p class="quiz-question">2. Vì sao cần kiểm tra ProxySQL ≥ 3.0.4 trước khi dùng driver PostgreSQL hiện đại (psycopg2, JDBC, libpq)?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Bản cũ hơn không hỗ trợ port 6133</button></li>
+      <li><button class="quiz-option">Bản cũ hơn không có monitor module</button></li>
+      <li><button class="quiz-option">Driver mặc định dùng Extended Query Protocol, chỉ hỗ trợ đầy đủ từ 3.0.4</button></li>
+      <li><button class="quiz-option">Bản cũ hơn không có Admin interface</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">3. ProxySQL kiểm tra một PostgreSQL server là primary hay replica bằng cách nào?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Gọi pg_is_in_recovery()</button></li>
+      <li><button class="quiz-option">Đọc biến read_only như MySQL</button></li>
+      <li><button class="quiz-option">Hỏi trực tiếp Patroni</button></li>
+      <li><button class="quiz-option">So sánh replication lag</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    MISSION.md đã cập nhật để phản ánh hệ thống thật có cả MySQL và PostgreSQL (xem learning-records/0002). Muốn đi tiếp: dựng lab thật cho PostgreSQL (giống Lesson 3/9 nhưng với psql), hay quay lại phần MySQL backend layer trên K8s còn treo từ trước?
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

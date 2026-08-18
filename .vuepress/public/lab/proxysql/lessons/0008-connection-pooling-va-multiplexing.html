@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 8: Connection pooling &amp; multiplexing</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0007-proxysql-tren-kubernetes.html">Lesson 0007</a> ·
+    Lesson 0008 ·
+    <a href="../reference/0008-connection-pooling-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0008</p>
+  <h1>Connection pooling &amp; multiplexing — đào sâu</h1>
+  <p><em>~13 phút đọc + quiz. Bạn đã nhắc tới connection pooling từ Lesson 1 như một lý do chọn ProxySQL. Lesson này mở nó ra: cơ chế thật hoạt động thế nào, khi nào nó "âm thầm" ngừng hoạt động, và cách phát hiện.</em></p>
+
+  <h2>Hai loại connection — điểm dễ nhầm nhất</h2>
+  <p>Vì bạn đã quản trị MySQL nhiều năm, "connection" với bạn nghĩa là 1 thứ. Với ProxySQL, có 2 loại tách biệt hoàn toàn, mỗi loại có giới hạn riêng:</p>
+  <table>
+    <thead><tr><th></th><th>Frontend connection</th><th>Backend connection</th></tr></thead>
+    <tbody>
+      <tr><td>Giữa ai và ai</td><td>App ↔ ProxySQL</td><td>ProxySQL ↔ MySQL server</td></tr>
+      <tr><td>Giới hạn ở đâu</td><td><code>mysql_users.max_connections</code></td><td><code>mysql_servers.max_connections</code></td></tr>
+      <tr><td>Thường thấy bao nhiêu</td><td>Hàng nghìn (mỗi app worker mở riêng)</td><td>Hàng chục (dùng chung nhờ multiplexing)</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Đây chính là "connection pooling" mà Lesson 1 nói tới</span>Không có ProxySQL: 1000 app worker = 1000 OS thread trên MySQL (MySQL dùng "thread per connection", tốn tài nguyên dù đang idle). Có ProxySQL với multiplexing: 1000 frontend connection có thể dùng chung 30-50 backend connection thật.</p>
+
+  <h2>Cơ chế: mượn — dùng — trả ngay</h2>
+  <p>Khi 1 session app gửi 1 query, ProxySQL mượn 1 backend connection đang free trong pool, chạy query, trả kết quả, rồi <strong>trả connection đó lại pool ngay lập tức</strong> — không đợi app đóng kết nối. Session khác có thể mượn ngay connection vừa được trả. Đây khác hoàn toàn với connection pool kiểu "sticky" (1 app connection = 1 backend connection cố định) mà các connection pool phía app (ví dụ HikariCP) thường làm.</p>
+
+  <h2>Điểm quan trọng nhất: khi nào multiplexing bị tắt</h2>
+  <p>Multiplexing chỉ an toàn khi backend connection <strong>không mang state</strong> giữa 2 query của 2 session khác nhau. Một số lệnh SQL phá vỡ giả định đó — ProxySQL phải "khoá" connection đó cho riêng 1 session:</p>
+  <table>
+    <thead><tr><th>Tắt tạm (tự bật lại)</th><th>Tắt vĩnh viễn cho session đó</th></tr></thead>
+    <tbody>
+      <tr><td>Transaction đang mở → tới COMMIT/ROLLBACK</td><td><code>GET_LOCK()</code></td></tr>
+      <tr><td><code>LOCK TABLES</code> → tới <code>UNLOCK TABLES</code></td><td><code>SQL_CALC_FOUND_ROWS</code></td></tr>
+      <tr><td>Prepared statement <strong>binary protocol</strong> → tới <code>COM_STMT_CLOSE</code></td><td><code>CREATE TEMPORARY TABLE</code></td></tr>
+      <tr><td><code>SQL_LOG_BIN=0</code> → tới khi set lại =1</td><td><code>PREPARE ... FROM</code> qua <strong>text protocol</strong> (khác bên trái!)</td></tr>
+      <tr><td></td><td>Query chứa <code>@</code> (session/user variable) — trừ <code>SELECT @@tx_isolation</code>, <code>SELECT @@version</code></td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Gotcha thật đáng nhớ</span><code>PREPARE stmt FROM '...'</code> kiểu text (SQL thường) tắt multiplexing <strong>vĩnh viễn</strong> cho session đó, dù bạn có <code>DEALLOCATE PREPARE</code> sau đó — không có đường bật lại. Nhưng nếu driver dùng binary protocol (<code>COM_STMT_PREPARE</code>, cách hầu hết driver hiện đại làm), multiplexing tắt tạm và <strong>tự bật lại</strong> khi client đóng statement (<code>COM_STMT_CLOSE</code>). Hai cơ chế nhìn giống nhau về mặt SQL nhưng hành vi hoàn toàn khác — nếu thấy pool co lại bất thường, kiểm tra driver app đang dùng protocol nào.</p>
+
+  <h2>Cách phát hiện pool đang "cạn" thật hay chỉ đang bị pin</h2>
+  <p>Query <code>stats_mysql_connection_pool</code> (đã học sơ ở Lesson 6, giờ đọc kỹ hơn):</p>
+  <pre><code>SELECT hostgroup, srv_host, status, ConnUsed, ConnFree, ConnOK, ConnERR, MaxConnUsed
+FROM stats_mysql_connection_pool;</code></pre>
+  <ul>
+    <li><strong>Khoẻ mạnh</strong>: ConnUsed thấp, ConnFree khá cao, tổng Queries rất lớn → ít connection phục vụ rất nhiều query, đúng mục đích multiplexing.</li>
+    <li><strong>Đang cạn thật</strong>: ConnUsed gần chạm <code>max_connections</code> liên tục, kể cả lúc traffic không cao bất thường → cần tăng <code>max_connections</code> hoặc thêm backend.</li>
+    <li><strong>Bị pin (không phải cạn thật)</strong>: ConnFree luôn ~0 dù traffic không cao → nghi ngờ app đang chạy 1 trong các lệnh "tắt vĩnh viễn" ở bảng trên trên nhiều session, khiến mỗi session giữ riêng 1 connection.</li>
+  </ul>
+
+  <h2>Sizing — liên hệ lại Lesson 5 và 7</h2>
+  <p><code>mysql_servers.max_connections</code> là giới hạn <strong>cho từng node ProxySQL riêng lẻ</strong>, không phải tổng hệ thống. Bạn đã dựng 3 node ProxySQL ở Lesson 5 (Keepalived) và có thể N pod ở Lesson 7 (K8s Deployment) — mỗi node/pod đó mở pool riêng tới cùng 1 MySQL backend. 3 node × <code>max_connections=100</code> → MySQL backend thấy tối đa 300 connection đồng thời, không phải 100. Khi bạn quyết định con số cuối cùng cho hạ tầng, nhớ nhân theo số instance ProxySQL đang chạy.</p>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p><a href="https://proxysql.com/documentation/multiplexing/">ProxySQL: Multiplexing</a> (danh sách đầy đủ điều kiện, cách tune qua query rules) và <a href="https://proxysql.com/documentation/mysql-prepared-statements-pooling-and-caching">ProxySQL: MySQL Connection Pooling, Multiplexing &amp; Caching</a> (chi tiết prepared statement). Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="2">
+    <p class="quiz-question">1. mysql_servers.max_connections giới hạn điều gì?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Tổng frontend connection toàn hệ thống</button></li>
+      <li><button class="quiz-option">Số connection một user được mở</button></li>
+      <li><button class="quiz-option">Backend connection từ một node ProxySQL tới server đó</button></li>
+      <li><button class="quiz-option">Số query mỗi giây tối đa cho phép</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="1">
+    <p class="quiz-question">2. App dùng driver hiện đại, prepare statement qua binary protocol rồi đóng statement ngay sau khi dùng. Multiplexing sẽ thế nào?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Tắt vĩnh viễn cho session đó</button></li>
+      <li><button class="quiz-option">Tắt tạm, tự bật lại khi statement đóng</button></li>
+      <li><button class="quiz-option">Không ảnh hưởng gì cả</button></li>
+      <li><button class="quiz-option">Chỉ tắt nếu dùng transaction cùng lúc</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">3. stats_mysql_connection_pool cho thấy ConnFree luôn gần 0 dù traffic bình thường. Nghi ngờ đầu tiên nên là gì?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">App đang chạy lệnh làm tắt multiplexing vĩnh viễn trên nhiều session</button></li>
+      <li><button class="quiz-option">MySQL server bị mất mạng</button></li>
+      <li><button class="quiz-option">ProxySQL Cluster đang đồng bộ config</button></li>
+      <li><button class="quiz-option">Readiness probe đang fail</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    Có câu hỏi nào về multiplexing/pooling chưa rõ, hỏi thêm tôi trước khi qua chủ đề khác — đây là phần nền dễ bị hiểu sai nhất khi mới chuyển từ quản trị MySQL sang vận hành proxy layer. Muốn đi tiếp: quay lại chi tiết MySQL backend layer trên K8s, hoặc dựng lab thật để tự tay quan sát ConnUsed/ConnFree thay đổi khi có traffic?
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

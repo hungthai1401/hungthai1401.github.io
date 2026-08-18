@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 12: Lab — nhiều replica PostgreSQL và pgsql-monitor_writer_is_also_reader</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0011-lab-proxysql-postgresql-failover.html">Lesson 0011</a> ·
+    Lesson 0012 (lab) ·
+    <a href="../reference/0009-proxysql-postgresql-cheatsheet.html">Reference 0009</a>
+  </p>
+  <p class="kicker">Lesson 0012 · Lab thực hành</p>
+  <h1>Lab: nhiều replica PostgreSQL + <code>pgsql-monitor_writer_is_also_reader</code></h1>
+  <p><em>~15 phút chạy tay. Lesson 11 chỉ có 1 replica. Lab này thêm replica thứ 2 để trả lời 2 câu hỏi: (1) ProxySQL chia tải đọc giữa nhiều replica thế nào, và (2) khi failover, node vừa được promote có nên tiếp tục nhận traffic đọc hay không — do biến <code>pgsql-monitor_writer_is_also_reader</code> quyết định. Toàn bộ số liệu dưới đây là kết quả chạy thật ở <code>lab/0011-postgresql-multi-replica/</code>.</em></p>
+
+  <h2>Kiến trúc lab</h2>
+  <p>1 primary + 2 replica (streaming replication, giống Lesson 11) + 1 ProxySQL (hostgroup 0 = primary, hostgroup 1 = 2 replica) + query rule route <code>^SELECT</code> sang hostgroup 1.</p>
+  <pre><code>cd lab/0011-postgresql-multi-replica
+docker compose up -d
+sleep 25
+./setup.sh</code></pre>
+  <p>Không gặp bug lần này — nhờ tái dùng đúng <code>init-hba.sh</code> và cách gọi <code>docker exec -i</code> đã sửa ở Lesson 11.</p>
+
+  <h2>Câu hỏi 1 — ProxySQL chia tải đọc giữa 2 replica thế nào?</h2>
+  <p>Chạy 20 lần <code>SELECT inet_server_addr()</code>, <strong>mỗi lần một connection mới</strong> (để tránh multiplexing giữ nguyên 1 backend connection cho cả loạt test — xem lại Lesson 8 nếu quên tại sao điều này quan trọng):</p>
+  <pre><code>for i in $(seq 1 20); do
+  psql -h proxysql -p 6133 -U appuser -d appdb -tAc "SELECT inet_server_addr();"
+done | sort | uniq -c</code></pre>
+  <p><strong>Kết quả thật:</strong></p>
+  <pre><code>  10 192.168.183.3   (replica2)
+  10 192.168.183.4   (replica1)</code></pre>
+  <p class="callout"><span class="callout-label">Kết luận</span>Chia đúng 50/50 — round-robin theo <code>weight</code> (cả 2 node mặc định weight=1 trong <code>pgsql_servers</code>). Nếu muốn lệch tải (ví dụ 1 replica mạnh hơn), tăng <code>weight</code> cho node đó — cơ chế giống hệt <code>mysql_servers</code> ở Lesson 2, không có gì đặc biệt cho PostgreSQL.</p>
+
+  <h2>Câu hỏi 2 — <code>pgsql-monitor_writer_is_also_reader</code> làm gì khi failover?</h2>
+  <p>Biến này (default <code>true</code>) quyết định: khi 1 node chuyển từ <code>read_only=1 → 0</code> (tức được promote), nó có <strong>tiếp tục ở lại</strong> reader hostgroup hay không.</p>
+  <table>
+    <thead><tr><th>Giá trị</th><th>Hành vi khi node được promote</th></tr></thead>
+    <tbody>
+      <tr><td><code>true</code> (default)</td><td>Node được <strong>copy</strong> vào writer hostgroup, <strong>vẫn giữ</strong> trong reader hostgroup → vừa nhận write, vừa tiếp tục nhận read.</td></tr>
+      <tr><td><code>false</code></td><td>Node được <strong>chuyển hẳn</strong> vào writer hostgroup, <strong>gỡ khỏi</strong> reader hostgroup → chỉ nhận write, hết nhận read.</td></tr>
+    </tbody>
+  </table>
+  <p>Nguồn: <a href="https://proxysql.com/documentation/global-variables/pgsql-monitor-variables/#pgsql-monitor_writer_is_also_reader" target="_blank" rel="noopener">ProxySQL Docs — PostgreSQL Monitor Variables</a>.</p>
+
+  <h3>Test thật: đổi sang <code>false</code> rồi failover</h3>
+  <pre><code>SET pgsql-monitor_writer_is_also_reader='false';
+LOAD PGSQL VARIABLES TO RUNTIME;
+-- (không cần SAVE nếu chỉ test tạm)
+
+docker stop lab11-postgres-primary
+docker exec lab11-postgres-replica1 psql -U postgres -c "SELECT pg_promote();"</code></pre>
+  <p><strong>Kết quả thật, poll <code>runtime_pgsql_servers</code>:</strong></p>
+  <table>
+    <thead><tr><th>Thời điểm</th><th>hostgroup 0 (writer)</th><th>hostgroup 1 (reader)</th></tr></thead>
+    <tbody>
+      <tr><td>Trước failover</td><td>postgres-primary</td><td>postgres-replica1, postgres-replica2</td></tr>
+      <tr><td>Sau khi promote (~2s)</td><td>postgres-primary, <strong>postgres-replica1</strong></td><td><strong>postgres-replica2</strong> (chỉ còn 1)</td></tr>
+      <tr><td>~12s sau (primary cũ SHUNNED)</td><td>postgres-primary (SHUNNED), postgres-replica1 (ONLINE)</td><td>postgres-replica2</td></tr>
+    </tbody>
+  </table>
+  <p><strong>replica1 (vừa promote) hoàn toàn biến mất khỏi hostgroup 1</strong> — khác hẳn Lesson 11 (nơi <code>writer_is_also_reader=true</code>, node promote vẫn ở lại cả 2 hostgroup). Xác nhận bằng đọc thật:</p>
+  <pre><code>for i in $(seq 1 10); do psql -h proxysql -p 6133 -U appuser -d appdb -tAc "SELECT inet_server_addr();"; done | sort | uniq -c
+# 10 192.168.183.3   ← toàn bộ đi vào replica2, không một lần nào vào replica1 (đã promote)</code></pre>
+  <p>Write vẫn hoạt động bình thường sau failover, đi đúng vào replica1 (giờ là primary mới) — không cần đổi gì ở app.</p>
+
+  <h2>Chọn giá trị nào cho production?</h2>
+  <ul>
+    <li><strong><code>true</code> (default)</strong> — dùng khi bạn có ít node (2-3) và không muốn giảm capacity đọc ngay sau failover. Đánh đổi: writer phải chịu thêm tải đọc, có thể ảnh hưởng latency write trong giai đoạn ngay sau failover.</li>
+    <li><strong><code>false</code></strong> — dùng khi bạn muốn cách ly triệt để write/read (ví dụ writer instance có config khác — ít RAM cho cache, tối ưu cho write throughput chứ không phải cho các query đọc nặng). Đánh đổi: capacity đọc giảm ngay lập tức sau failover (mất 1 node reader) cho tới khi bạn thêm replica mới.</li>
+  </ul>
+  <p class="callout"><span class="callout-label">Ghi nhớ cho mission của bạn</span>Với hệ thống mission-critical nhiều replica, cân nhắc <code>false</code> nếu writer node được sized khác biệt rõ với reader — tránh vô tình dồn traffic đọc vào 1 node chưa kịp "nguội" sau failover.</p>
+
+  <h2>Dọn lab</h2>
+  <pre><code>cd lab/0011-postgresql-multi-replica
+docker compose down -v</code></pre>
+
+  <p class="footer-note">
+    Muốn thử thêm biến thể (ví dụ 3 replica, hoặc set <code>weight</code> khác nhau để thấy tải lệch), hỏi thêm tôi. Bước tiếp theo trong mission: lớp HA/Keepalived cho ProxySQL khi backend là PostgreSQL (Lesson 13), hay quay lại phần MySQL-trên-K8s còn treo từ Lesson 7?
+  </p>
+</main>
+</body>
+</html>

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 14: Lab — kiểm chứng gap pgsql_replication_hostgroups trong ProxySQL Cluster</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0013-ha-keepalived-cho-postgresql.html">Lesson 0013</a> ·
+    Lesson 0014 (lab) ·
+    <a href="../reference/0004-proxysql-ha-cheatsheet.html">Reference 0004</a> ·
+    <a href="../reference/0009-proxysql-postgresql-cheatsheet.html">Reference 0009</a>
+  </p>
+  <p class="kicker">Lesson 0014 · Lab thực hành — kiểm chứng giả thuyết</p>
+  <h1>Lab: gap <code>pgsql_replication_hostgroups</code> trong ProxySQL Cluster — thật hay không?</h1>
+  <p><em>~15 phút. Lesson 13 nêu nghi ngờ: release note 3.0.8 không nêu tên <code>pgsql_replication_hostgroups</code> trong danh sách bảng được ProxySQL Cluster Sync. Tôi đã dựng lab thật với 2 node ProxySQL Cluster để kiểm chứng. <strong>Kết quả: nghi ngờ đó sai</strong> — bảng này đồng bộ tốt. Đây là ví dụ thật về lý do phải tự lab-test trước khi tin 100% vào tài liệu, kể cả tài liệu chính thức.</em></p>
+
+  <h2>Thiết kế lab</h2>
+  <p>2 node ProxySQL (<code>proxysql1</code>, <code>proxysql2</code>) join nhau thành 1 ProxySQL Cluster + 1 PostgreSQL primary/replica. Cấu hình <code>pgsql_servers</code>, <code>pgsql_replication_hostgroups</code>, <code>pgsql_query_rules</code> <strong>chỉ trên proxysql1</strong>, rồi quan sát proxysql2 có tự nhận được không — không đụng gì vào proxysql2 cả.</p>
+  <pre><code>cd lab/0012-proxysql-cluster-postgresql-gap
+docker compose up -d
+sleep 25
+
+# Join cluster hai chiều (mỗi node khai peer của nhau qua proxysql_servers, port = admin MySQL 6032)
+# proxysql1: INSERT INTO proxysql_servers (hostname,port) VALUES ('proxysql2',6032); LOAD/SAVE PROXYSQL SERVERS
+# proxysql2: INSERT INTO proxysql_servers (hostname,port) VALUES ('proxysql1',6032); LOAD/SAVE PROXYSQL SERVERS</code></pre>
+  <p class="callout"><span class="callout-label">Chi tiết dễ quên</span>ProxySQL Cluster giao tiếp qua <strong>admin port MySQL protocol (6032)</strong>, không phải port PostgreSQL (6132) — dù mục tiêu là đồng bộ config PostgreSQL. Cluster sync luôn chạy trên kênh MySQL protocol, bất kể backend engine nào đang được đồng bộ.</p>
+
+  <h2>Bước kiểm chứng: cấu hình chỉ trên proxysql1</h2>
+  <pre><code>-- Chỉ chạy trên proxysql1
+INSERT INTO pgsql_servers (hostgroup_id,hostname,port) VALUES (0,'postgres-primary',5432);
+INSERT INTO pgsql_servers (hostgroup_id,hostname,port) VALUES (1,'postgres-replica',5432);
+INSERT INTO pgsql_replication_hostgroups (writer_hostgroup,reader_hostgroup,check_type)
+  VALUES (0,1,'read_only');
+LOAD PGSQL SERVERS TO RUNTIME; SAVE PGSQL SERVERS TO DISK;</code></pre>
+
+  <h2>Kết quả thật — proxysql2 (không đụng gì) sau vài giây</h2>
+  <pre><code>-- Trên proxysql2, KHÔNG chạy lệnh gì, chỉ SELECT:
+SELECT * FROM pgsql_servers;             -- CÓ 2 dòng, giống proxysql1
+SELECT * FROM runtime_pgsql_servers;     -- CÓ 2 dòng, giống proxysql1
+SELECT * FROM pgsql_replication_hostgroups;  -- 0|1|read_only|pg-repl  ← ĐÃ ĐỒNG BỘ</code></pre>
+  <p>Log lỗi của proxysql2 xác nhận chính xác cơ chế:</p>
+  <pre><code>[INFO] Cluster: detected a new checksum for pgsql_servers_v2 from peer proxysql1:6032 ...
+[INFO] Cluster: Fetching PostgreSQL Servers v2 from peer proxysql1:6032 completed.
+[INFO] Cluster: Fetching PostgreSQL Replication Hostgroups from peer proxysql1:6032 completed.
+[INFO] Cluster: Fetching PostgreSQL Hostgroup Attributes from peer proxysql1:6032 completed.
+[INFO] Cluster: Fetching PostgreSQL Servers SSL Params from peer proxysql1:6032 completed.
+[INFO] Cluster: Fetching Runtime PostgreSQL Servers from peer proxysql1:6032 completed.</code></pre>
+  <p class="callout"><span class="callout-label">Kết luận đã kiểm chứng</span><code>pgsql_replication_hostgroups</code> <strong>được đồng bộ</strong> qua ProxySQL Cluster (kiểm chứng trên ProxySQL 3.0.10), cùng lúc với <code>pgsql_servers_v2</code>, <code>pgsql_hostgroup_attributes</code>, <code>pgsql_servers_ssl_params</code>. Release note 3.0.8 chỉ đơn giản <strong>không liệt kê đầy đủ</strong> — không có nghĩa là bảng đó bị bỏ ngoài cluster sync. Bài học: tài liệu chính thức có thể thiếu chi tiết dù không sai về hướng chính; log thật + lab thật vẫn là nguồn đáng tin nhất khi cần chắc chắn 100%.</p>
+
+  <h3>Test thêm: query rule cũng đồng bộ live</h3>
+  <pre><code>-- Trên proxysql1, thêm 1 query rule mới, KHÔNG đụng proxysql2
+INSERT INTO pgsql_query_rules (rule_id,active,match_digest,destination_hostgroup,apply)
+  VALUES (10,1,'^SELECT',1,1);
+LOAD PGSQL QUERY RULES TO RUNTIME; SAVE PGSQL QUERY RULES TO DISK;
+
+-- 5 giây sau, trên proxysql2:
+SELECT rule_id,match_digest,destination_hostgroup,apply FROM pgsql_query_rules;
+-- 10|^SELECT|1|1   ← đồng bộ đúng, không cần chạm proxysql2</code></pre>
+
+  <div class="quiz" data-quiz-id="0014-q1">
+    <p class="quiz-question">Trong lab này, sau khi cấu hình pgsql_replication_hostgroups chỉ trên proxysql1, proxysql2 có bảng đó không?</p>
+    <ul class="quiz-options">
+      <li data-correct="false">Không, phải cấu hình tay trên proxysql2</li>
+      <li data-correct="true">Có, đồng bộ tự động qua Cluster</li>
+      <li data-correct="false">Có nhưng chỉ sau khi restart proxysql2</li>
+      <li data-correct="false">Có nhưng chỉ đồng bộ pgsql_servers, không đồng bộ hostgroups</li>
+    </ul>
+  </div>
+
+  <h2>Một gotcha thật khác tìm thấy trong lúc lab (không liên quan gap ban đầu)</h2>
+  <p>Khi 2 node cùng join <code>proxysql_servers</code> vào nhau ở cùng giây, log xuất hiện:</p>
+  <pre><code>[ERROR] Cluster: detected a peer proxysql1:6032 with proxysql_servers version 2, epoch 1787026031 ...
+Own version: 2, epoch: 1787026031, checksum ... Sync conflict, epoch times are EQUAL,
+can't determine which server holds the latest config, we won't sync.</code></pre>
+  <p class="callout"><span class="callout-label">Gotcha thật</span>Nếu 2 node ProxySQL Cluster được cấu hình <code>proxysql_servers</code> (danh sách peer) ở đúng cùng 1 giây (epoch giống nhau), ProxySQL <strong>không tự quyết được ai đúng</strong> và dừng đồng bộ bảng đó — thông báo lỗi lặp lại mỗi 30 lần kiểm tra. Cách khắc phục theo đúng thông báo: chạy lại <code>LOAD PROXYSQL SERVERS TO RUNTIME</code> trên node bạn muốn làm "nguồn sự thật" để tạo epoch mới, phá vỡ tie. Không ảnh hưởng tới việc đồng bộ pgsql_* — chỉ ảnh hưởng riêng bảng <code>proxysql_servers</code> (danh sách peer) trong lab này.</p>
+
+  <h2>Điều còn chưa kiểm chứng — nếu muốn đào tiếp</h2>
+  <p><code>stats_proxysql_servers_checksums</code> — bảng bạn hay dùng để giám sát tình trạng đồng bộ cluster (xem Reference 0004) — <strong>không hiện bất kỳ dòng <code>pgsql_*</code> nào</strong> trong lab này, dù việc đồng bộ pgsql thực sự diễn ra (xác nhận qua log + dữ liệu). Đây là gap quan sát được thật: nếu bạn dựa vào bảng này để dashboard giám sát sức khoẻ Cluster, bạn sẽ <strong>không thấy</strong> tình trạng đồng bộ PostgreSQL — phải đọc error log hoặc tự diff bảng giữa các node.</p>
+
+  <h2>Dọn lab</h2>
+  <pre><code>cd lab/0012-proxysql-cluster-postgresql-gap
+docker compose down -v</code></pre>
+
+  <p class="footer-note">
+    Nguồn: log thật từ lab này (ProxySQL 3.0.10), <a href="https://proxysql.com/blog/announcing-proxysql-3-0-8/" target="_blank" rel="noopener">ProxySQL Blog — Announcing 3.0.8</a>,
+    <a href="https://www.proxysql.com/documentation/proxysql-cluster/" target="_blank" rel="noopener">ProxySQL Docs — ProxySQL Cluster</a>.
+    Có chỗ nào chưa rõ, hỏi thêm tôi ngay trong session này.
+  </p>
+</main>
+</body>
+</html>

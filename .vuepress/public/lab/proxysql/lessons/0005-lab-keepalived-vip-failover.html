@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 5 (Lab): Tự tay gây failover VIP với Keepalived</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0004-proxysql-ha-khong-spof.html">Lesson 0004</a> ·
+    Lesson 0005 ·
+    <a href="../reference/0005-docker-vrrp-lab-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0005 · Lab thực hành</p>
+  <h1>Tự tay gây failover VIP với Keepalived</h1>
+  <p><em>~20 phút, cần Docker. Lesson 4 giải thích lý thuyết Keepalived + VIP. Lesson này bạn tự tay dừng một node ProxySQL và <strong>nhìn thấy</strong> VIP nhảy sang node khác trong vài giây — bằng chính mắt mình, không phải qua slide.</em></p>
+
+  <h2>Đọc trước 3 điều này — nếu không, lab sẽ khó hiểu</h2>
+  <p>Docker không phải VM/bare-metal, nên lab này có 3 chỗ "lách luật" so với production thật. Cả 3 đã được giải thích kỹ trong <a href="../reference/0005-docker-vrrp-lab-cheatsheet.html">reference cheat sheet</a> — đọc trước khi chạy:</p>
+  <ol>
+    <li><strong>Keepalived và ProxySQL phải chung network namespace</strong> (mô phỏng "chung 1 máy"). Lab dùng <code>network_mode: "service:proxysqlN"</code> để làm điều này — trên VM/bare-metal thật bạn không cần trick này, chỉ cần cài cả hai lên cùng máy.</li>
+    <li><strong>VRRP dùng unicast, không multicast</strong> — ổn định hơn trong mạng Docker.</li>
+    <li><strong>Test phải chạy qua container <code>client</code></strong> (<code>docker exec</code>), không chạy trực tiếp từ Terminal Mac — Docker Desktop trên macOS không route thẳng IP container ra ngoài.</li>
+  </ol>
+
+  <h2>Bước 1 — Dựng lab</h2>
+  <pre><code>cd lab/0005-keepalived-vip
+docker compose up -d
+docker compose ps   # phải thấy đủ 3 mysql-backend, 3 proxysql, 3 keepalived, 1 client</code></pre>
+  <p>Lab có 3 cặp ProxySQL+Keepalived (priority 150/100/50) cùng share một VIP <code>172.28.0.100</code>, và 1 MySQL backend đơn giản để có gì đó thật sự trả lời query.</p>
+
+  <h2>Bước 2 — Xem VIP đang ở đâu</h2>
+  <pre><code>docker exec lab5-keepalived1 ip addr show eth0 | grep 172.28.0.100</code></pre>
+  <p>Vì <code>proxysql1</code>/<code>keepalived1</code> có priority cao nhất (150), VIP phải đang nằm ở đây. Thử lệnh tương tự với <code>lab5-keepalived2</code> và <code>lab5-keepalived3</code> — chỉ 1 trong 3 có VIP tại một thời điểm.</p>
+
+  <h2>Bước 3 — Xác nhận traffic thật đi qua VIP</h2>
+  <pre><code>docker exec -it lab5-client mysql -h 172.28.0.100 -P 6033 -uappuser -papppass -e "SELECT 'ok';"</code></pre>
+  <p>Nếu trả về <code>ok</code>, nghĩa là client vừa kết nối vào VIP, và VIP đang route đúng vào node ProxySQL đang giữ nó — đây chính xác là hành vi bạn đọc ở Lesson 4, giờ thấy tận mắt.</p>
+
+  <h2>Bước 4 — Gây sự cố thật</h2>
+  <pre><code>docker stop lab5-proxysql1</code></pre>
+  <p>Container <code>proxysql1</code> chết. Vì <code>keepalived1</code> share network namespace với nó, health check <code>check_proxysql.sh</code> (kiểm tra port 6033 còn mở không) sẽ thất bại 2 lần liên tiếp (<code>fall 2</code>, interval 2s) → mất VRRP quyền MASTER → node priority 100 (<code>proxysql2</code>/<code>keepalived2</code>) lên thay.</p>
+
+  <h2>Bước 5 — Xác nhận failover đã xảy ra</h2>
+  <pre><code># Đợi ~5-6 giây, rồi kiểm tra
+docker exec lab5-keepalived2 ip addr show eth0 | grep 172.28.0.100
+docker exec -it lab5-client mysql -h 172.28.0.100 -P 6033 -uappuser -papppass -e "SELECT 'ok';"</code></pre>
+  <p>VIP giờ phải nằm ở <code>keepalived2</code>, và câu query vẫn chạy được — <strong>application không cần đổi gì cả</strong>, vẫn trỏ vào <code>172.28.0.100</code> như trước. Đây chính là điểm mấu chốt: VIP là địa chỉ ổn định duy nhất mà application biết tới.</p>
+
+  <h2>Bước 6 — Fail-back</h2>
+  <pre><code>docker start lab5-proxysql1
+docker restart lab5-keepalived1   # xem lưu ý bên dưới — bước này bắt buộc
+# đợi vài giây
+docker exec lab5-keepalived1 ip addr show eth0 | grep 172.28.0.100</code></pre>
+  <p>Vì <code>proxysql1</code> có priority cao nhất (150), khi nó sống lại, VRRP sẽ tự chuyển VIP về đây — giống hành vi "fail-back" đã nói ở Lesson 4.</p>
+  <p class="callout"><span class="callout-label">Vì sao phải restart cả keepalived1</span>Vì <code>keepalived1</code> dùng <code>network_mode: "service:proxysql1"</code>, network namespace của nó gắn liền với <code>proxysql1</code>. Khi <code>proxysql1</code> chết, netns đó biến mất; khi bạn <code>docker start</code> lại, container được cấp netns <strong>mới</strong>, nhưng <code>keepalived1</code> — vốn vẫn đang "Up" từ trước — không tự nhận netns mới. Phải <code>docker restart</code> nó tường minh. Đây là hành vi riêng của cách lab dùng netns chung trong Docker, không phải hành vi của Keepalived thật trên VM/bare-metal (ở đó Keepalived và ProxySQL là 2 process độc lập trên cùng 1 OS, không có khái niệm "netns chết theo nhau").</p>
+
+  <h2>Dọn lab</h2>
+  <pre><code>docker compose down -v</code></pre>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p><a href="https://github.com/osixia/container-keepalived">osixia/keepalived</a> (image dùng trong lab) và <a href="https://dzone.com/articles/setting-up-proxysql-for-high-availability-no-singl">Marco Tusa: Setting Up ProxySQL for High Availability</a> (nguyên lý priority/failover áp dụng ở đây). Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="1">
+    <p class="quiz-question">1. Vì sao lab này cần network_mode: "service:proxysqlN" cho container keepalived?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Để tăng tốc độ mạng giữa 2 container</button></li>
+      <li><button class="quiz-option">Để mô phỏng Keepalived và ProxySQL chung 1 máy</button></li>
+      <li><button class="quiz-option">Để container tự động restart khi lỗi</button></li>
+      <li><button class="quiz-option">Để giảm số lượng container cần chạy</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">2. Sau khi docker stop proxysql1, application đang kết nối vào VIP cần đổi gì để tiếp tục hoạt động?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Không cần đổi gì cả</button></li>
+      <li><button class="quiz-option">Đổi sang IP của proxysql2</button></li>
+      <li><button class="quiz-option">Đổi sang IP của mysql-backend</button></li>
+      <li><button class="quiz-option">Restart lại toàn bộ ứng dụng</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="2">
+    <p class="quiz-question">3. Vì sao lệnh test trong lab này phải chạy qua "docker exec -it lab5-client ..." mà không chạy thẳng từ Terminal Mac?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Vì ProxySQL chỉ nhận traffic từ container khác</button></li>
+      <li><button class="quiz-option">Vì VIP đổi địa chỉ liên tục</button></li>
+      <li><button class="quiz-option">Vì Docker Desktop trên macOS không route thẳng IP container ra ngoài</button></li>
+      <li><button class="quiz-option">Vì mysql client không cài được trên Mac</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    Nếu VIP không failover như mong đợi, kiểm tra log: <code>docker logs lab5-keepalived1</code> — thường là do capability thiếu hoặc script health check sai đường dẫn. Dán log cho droid nếu bí. Đây cũng là lesson thực hành cuối cho phần "kiến trúc + HA" của mission. Bước tiếp theo tự nhiên là chuyển sang vận hành: monitor ProxySQL trên production thật, và quy trình đổi config an toàn không downtime — nói cho tôi biết khi bạn muốn học phần đó.
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

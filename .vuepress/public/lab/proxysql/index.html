@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProxySQL — Lessons &amp; Reference</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="kicker">Teaching workspace</p>
+  <h1>ProxySQL — Lessons &amp; Reference</h1>
+  <p>Toàn bộ nội dung học ProxySQL (MySQL + PostgreSQL): lý thuyết, lab thực hành đã kiểm chứng
+  thật, cheat sheet tham khảo nhanh. Nguồn code lab đầy đủ:
+  <a href="https://github.com/hungthai1401/proxysql-lab" target="_blank" rel="noopener">github.com/hungthai1401/proxysql-lab</a>.</p>
+
+  <h2>Lessons (14)</h2>
+    <ul>
+      <li><a href="lessons/0001-proxysql-la-gi-va-vi-sao-can.html">Lesson 1: ProxySQL là gì, và vì sao bạn cần nó</a></li>
+      <li><a href="lessons/0002-chon-topology-mysql.html">Lesson 2: Chọn topology MySQL trước khi cấu hình ProxySQL</a></li>
+      <li><a href="lessons/0003-lab-cai-va-cau-hinh-proxysql.html">Lesson 3 (Lab): Cài và cấu hình ProxySQL cho read/write split</a></li>
+      <li><a href="lessons/0004-proxysql-ha-khong-spof.html">Lesson 4: Làm cho chính ProxySQL không phải điểm chết</a></li>
+      <li><a href="lessons/0005-lab-keepalived-vip-failover.html">Lesson 5 (Lab): Tự tay gây failover VIP với Keepalived</a></li>
+      <li><a href="lessons/0006-van-hanh-production.html">Lesson 6: Vận hành ProxySQL trên production</a></li>
+      <li><a href="lessons/0007-proxysql-tren-kubernetes.html">Lesson 7: Thiết kế ProxySQL trên Kubernetes</a></li>
+      <li><a href="lessons/0008-connection-pooling-va-multiplexing.html">Lesson 8: Connection pooling &amp; multiplexing</a></li>
+      <li><a href="lessons/0009-lab-quan-sat-connection-pool.html">Lesson 9: Lab — Quan sát ConnUsed/ConnFree theo traffic</a></li>
+      <li><a href="lessons/0010-proxysql-cho-postgresql.html">Lesson 10: ProxySQL cho PostgreSQL</a></li>
+      <li><a href="lessons/0011-lab-proxysql-postgresql-failover.html">Lesson 11: Lab — ProxySQL + PostgreSQL streaming replication + failover</a></li>
+      <li><a href="lessons/0012-lab-postgresql-multi-replica.html">Lesson 12: Lab — nhiều replica PostgreSQL và pgsql-monitor_writer_is_also_reader</a></li>
+      <li><a href="lessons/0013-ha-keepalived-cho-postgresql.html">Lesson 13: Lớp HA/Keepalived cho ProxySQL khi backend là PostgreSQL</a></li>
+      <li><a href="lessons/0014-lab-cluster-sync-postgresql-gap-test.html">Lesson 14: Lab — kiểm chứng gap pgsql_replication_hostgroups trong ProxySQL Cluster</a></li>
+    </ul>
+
+  <h2>Reference (9)</h2>
+    <ul>
+      <li><a href="reference/0001-proxysql-architecture-cheatsheet.html">Cheat sheet: Kiến trúc ProxySQL</a></li>
+      <li><a href="reference/0002-topology-decision-cheatsheet.html">Cheat sheet: Chọn topology MySQL + hostgroups tương ứng trong ProxySQL</a></li>
+      <li><a href="reference/0003-admin-commands-cheatsheet.html">Cheat sheet: ProxySQL Admin interface — bảng và lệnh cốt lõi</a></li>
+      <li><a href="reference/0004-proxysql-ha-cheatsheet.html">Cheat sheet: ProxySQL HA — Cluster + Keepalived/VIP</a></li>
+      <li><a href="reference/0005-docker-vrrp-lab-cheatsheet.html">Cheat sheet: Lab Keepalived/VRRP bằng Docker — giới hạn cần biết</a></li>
+      <li><a href="reference/0006-ops-monitoring-cheatsheet.html">Cheat sheet: Vận hành ProxySQL — monitor + đổi config an toàn</a></li>
+      <li><a href="reference/0007-proxysql-kubernetes-cheatsheet.html">Cheat sheet: ProxySQL trên Kubernetes</a></li>
+      <li><a href="reference/0008-connection-pooling-cheatsheet.html">Cheat sheet: Connection pooling &amp; multiplexing trong ProxySQL</a></li>
+      <li><a href="reference/0009-proxysql-postgresql-cheatsheet.html">Cheat sheet: ProxySQL cho PostgreSQL</a></li>
+    </ul>
+</main>
+</body>
+</html>

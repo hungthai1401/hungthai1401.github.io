@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: Connection pooling &amp; multiplexing trong ProxySQL</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0008</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>Connection pooling &amp; multiplexing trong ProxySQL</h1>
+
+  <h2>Hai loại connection — đừng nhầm</h2>
+  <table>
+    <thead><tr><th></th><th>Frontend connection</th><th>Backend connection</th></tr></thead>
+    <tbody>
+      <tr><td>Giữa ai và ai</td><td>App ↔ ProxySQL</td><td>ProxySQL ↔ MySQL server</td></tr>
+      <tr><td>Giới hạn bởi</td><td><code>mysql_users.max_connections</code></td><td><code>mysql_servers.max_connections</code></td></tr>
+      <tr><td>Số lượng thường thấy</td><td>Hàng nghìn (mỗi app instance mở 1 connection riêng)</td><td>Hàng chục (dùng chung qua multiplexing)</td></tr>
+      <tr><td>Xem ở đâu</td><td><code>stats_mysql_users</code></td><td><code>stats_mysql_connection_pool</code></td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Đây chính là giá trị cốt lõi của proxy layer</span>Không có ProxySQL, mỗi app instance × mỗi worker/thread = 1 connection MySQL thật, tốn 1 OS thread bên MySQL (MySQL dùng "thread per connection"). Với multiplexing, hàng nghìn frontend connection có thể dùng chung vài chục backend connection.</p>
+
+  <h2>Multiplexing hoạt động thế nào</h2>
+  <p>ProxySQL mượn một backend connection đang free, cho 1 frontend session dùng để chạy 1 query, rồi trả connection đó lại pool ngay khi xong — session khác có thể mượn tiếp connection đó ngay, không cần đợi session đầu tiên "đóng kết nối".</p>
+
+  <h2>Khi nào multiplexing TẠM bị tắt (tự bật lại được)</h2>
+  <ul>
+    <li>Transaction đang mở (tắt tới khi COMMIT/ROLLBACK)</li>
+    <li><code>LOCK TABLES</code> / <code>FLUSH TABLES WITH READ LOCK</code> (tới khi <code>UNLOCK TABLES</code>)</li>
+    <li><code>SQL_LOG_BIN=0</code> (tới khi set lại =1)</li>
+    <li>Prepared statement qua <strong>binary protocol</strong> (<code>COM_STMT_PREPARE</code>) — tắt tới khi client đóng hết statement bằng <code>COM_STMT_CLOSE</code></li>
+  </ul>
+
+  <h2>Khi nào multiplexing tắt VĨNH VIỄN cho session đó (nguy hiểm hơn)</h2>
+  <ul>
+    <li><code>GET_LOCK()</code></li>
+    <li><code>SQL_CALC_FOUND_ROWS</code></li>
+    <li><code>CREATE TEMPORARY TABLE</code></li>
+    <li><code>PREPARE stmt_name FROM '...'</code> qua <strong>text protocol</strong> (khác binary protocol ở trên — text PREPARE không có cách bật lại, dù <code>DEALLOCATE PREPARE</code>)</li>
+    <li>Query có <code>@</code> trong digest (session/user variable) — trừ 2 ngoại lệ hardcode: <code>SELECT @@tx_isolation</code>, <code>SELECT @@version</code></li>
+  </ul>
+  <p class="callout"><span class="callout-label">Gotcha production</span>Một session vô tình chạy 1 trong các lệnh trên sẽ giữ riêng 1 backend connection cho tới khi session đó đóng — nếu ORM/driver của bạn làm điều này trên mọi connection trong pool phía app, connection pool hiệu quả ở backend co lại gần bằng số frontend connection, mất hết lợi ích multiplexing.</p>
+
+  <h2>Tinh chỉnh multiplexing qua query rules</h2>
+  <pre><code>-- Không tắt multiplexing khi gặp SELECT @@max_allowed_packet (value=2: giữ nguyên trạng thái hiện tại)
+INSERT INTO mysql_query_rules (active,match_digest,multiplex) VALUES
+('1','^SELECT @@max_allowed_packet',2);
+
+-- value 0 = luôn tắt multiplex cho query này, 1 = luôn bật</code></pre>
+
+  <h2>Đọc stats_mysql_connection_pool đúng cách</h2>
+  <table>
+    <thead><tr><th>Cột</th><th>Ý nghĩa</th><th>Dấu hiệu bất thường</th></tr></thead>
+    <tbody>
+      <tr><td>ConnUsed</td><td>Backend connection đang bận</td><td>Gần bằng <code>max_connections</code> liên tục → sắp cạn pool</td></tr>
+      <tr><td>ConnFree</td><td>Backend connection idle, giữ sẵn để tái dùng</td><td>Luôn = 0 khi ConnUsed cao → connection bị pin (xem mục multiplexing tắt vĩnh viễn)</td></tr>
+      <tr><td>ConnOK / ConnERR</td><td>Tổng số lần connect thành công / thất bại</td><td>ConnERR tăng liên tục → backend không ổn hoặc sai credential</td></tr>
+      <tr><td>MaxConnUsed</td><td>Đỉnh ConnUsed từng đạt</td><td>So với <code>max_connections</code> hiện tại để biết còn dư bao nhiêu headroom</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Pattern khoẻ mạnh (theo doc chính thức):</strong> ConnUsed thấp, ConnFree khá cao, Queries rất lớn — nghĩa là rất ít connection đang phục vụ rất nhiều query, đúng như mục đích multiplexing.</p>
+
+  <h2>Sizing — cẩn thận với nhiều instance ProxySQL (HA/K8s)</h2>
+  <p><code>mysql_servers.max_connections</code> là giới hạn <strong>cho mỗi node ProxySQL riêng lẻ</strong>, không phải tổng toàn hệ thống. Có 3 node ProxySQL (Lesson 5 hoặc Lesson 7) × max_connections=100 mỗi node → backend MySQL thấy tối đa 300 connection đồng thời. Luôn tính: <code>mysql_max_connections (MySQL) &gt; số node ProxySQL × max_connections (mysql_servers)</code>.</p>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://proxysql.com/documentation/multiplexing/">ProxySQL: Multiplexing</a>,
+    <a href="https://proxysql.com/documentation/mysql-prepared-statements-pooling-and-caching">ProxySQL: MySQL Connection Pooling, Multiplexing &amp; Caching</a>,
+    <a href="https://proxysql.com/documentation/the-admin-schemas/stats/stats-mysql/">ProxySQL: MySQL Stats Tables</a>.
+    Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+</main>
+</body>
+</html>

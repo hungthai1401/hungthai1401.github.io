@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: Vận hành ProxySQL — monitor + đổi config an toàn</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0006</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>Vận hành ProxySQL — monitor + đổi config an toàn</h1>
+
+  <h2>4 lớp config đầy đủ (đính chính Reference 0003)</h2>
+  <p>Ở Reference 0003 tôi nói 3 lớp — thực ra chính thức là 4, thêm 1 lớp chỉ dùng lúc khởi động lần đầu:</p>
+  <table>
+    <thead><tr><th>Lớp</th><th>Là gì</th><th>Ghi/đọc</th></tr></thead>
+    <tbody>
+      <tr><td>RUNTIME</td><td>Cấu trúc dữ liệu thật mà worker thread đang dùng</td><td>Chỉ đổi qua <code>LOAD ... TO RUNTIME</code></td></tr>
+      <tr><td>MEMORY (main)</td><td>SQLite trong RAM, nơi bạn <code>INSERT/UPDATE/DELETE</code> bằng SQL</td><td>Đọc/ghi trực tiếp qua Admin — <strong>không persist</strong>, mất khi restart nếu chưa SAVE</td></tr>
+      <tr><td>DISK</td><td>SQLite trên disk (<code>proxysql.db</code>) — trạng thái "known good" sống sót qua restart</td><td>Chỉ đổi qua <code>SAVE ... TO DISK</code></td></tr>
+      <tr><td>CONFIG FILE</td><td><code>proxysql.cnf</code> — chỉ dùng để bootstrap lần đầu (<code>--initial</code>)</td><td>Sửa file text, không dùng để đổi config hàng ngày</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Rollback "miễn phí" bạn có sẵn</h2>
+  <p>Vì DISK luôn là bản "known good" cuối cùng bạn chủ động lưu, bạn có 2 đường rollback không cần backup thủ công:</p>
+  <ul>
+    <li><strong>Đã LOAD TO RUNTIME nhưng CHƯA SAVE TO DISK, thấy sai</strong> → chạy <code>LOAD &lt;MODULE&gt; FROM DISK</code> để nạp lại bản cũ vào MEMORY, rồi <code>LOAD ... TO RUNTIME</code> lại — hoặc đơn giản nhất: restart ProxySQL, nó tự nạp từ DISK.</li>
+    <li><strong>Đã SAVE TO DISK rồi mới phát hiện sai</strong> → không còn rollback tự động; đây là lý do luôn nên có backup file <code>proxysql.db</code> trước khi làm thay đổi lớn (xem "Checklist đổi config" dưới).</li>
+  </ul>
+  <p class="callout"><span class="callout-label">Quy tắc production</span>Không bao giờ <code>SAVE ... TO DISK</code> ngay sau <code>LOAD ... TO RUNTIME</code>. Luôn có một khoảng quan sát ở giữa (query traffic thật, check <code>stats_mysql_connection_pool</code>) — SAVE TO DISK chỉ khi chắc chắn runtime đang ổn.</p>
+
+  <h2>Checklist đổi config production</h2>
+  <ol>
+    <li>Backup <code>proxysql.db</code> (hoặc <code>SAVE &lt;MODULE&gt; TO DISK</code> hiện tại trước khi sửa, nếu muốn versioned rollback ở SQL level)</li>
+    <li>Sửa ở MEMORY layer bằng SQL</li>
+    <li><code>LOAD ... TO RUNTIME</code></li>
+    <li>Quan sát traffic thật vài phút: <code>stats_mysql_connection_pool</code>, <code>stats_mysql_query_digest</code>, error log</li>
+    <li>Ổn thì <code>SAVE ... TO DISK</code>. Không ổn thì <code>LOAD ... FROM DISK</code> rồi <code>LOAD ... TO RUNTIME</code> lại (hoặc restart)</li>
+  </ol>
+
+  <h2>Bảng stats cần theo dõi thường xuyên</h2>
+  <table>
+    <thead><tr><th>Bảng</th><th>Cho biết gì</th></tr></thead>
+    <tbody>
+      <tr><td><code>stats_mysql_connection_pool</code></td><td>Connection/traffic theo từng hostgroup — phát hiện hostgroup nào quá tải, node nào lỗi (<code>ConnERR</code> cao)</td></tr>
+      <tr><td><code>stats_mysql_query_digest</code></td><td>Query nào chạy nhiều/chậm, hostgroup nào nhận — phát hiện query rule route sai</td></tr>
+      <tr><td><code>stats_mysql_commands_counters</code></td><td>Phân bố loại lệnh (SELECT/INSERT/UPDATE...) và thời gian thực thi</td></tr>
+      <tr><td><code>monitor.mysql_server_ping_log</code></td><td>Backend còn phản hồi ping không</td></tr>
+      <tr><td><code>monitor.mysql_server_read_only_log</code></td><td>Lịch sử đọc <code>read_only</code> — phát hiện flapping writer/reader</td></tr>
+      <tr><td><code>stats_proxysql_servers_checksums</code></td><td>(nếu dùng ProxySQL Cluster) node nào lệch config</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Bật Prometheus exporter (built-in từ ProxySQL 2.x)</h2>
+  <pre><code>SET admin-restapi_enabled='true';
+LOAD ADMIN VARIABLES TO RUNTIME;
+-- endpoint mặc định: http://&lt;proxysql-host&gt;:6070/metrics
+-- Nếu chạy nhiều ProxySQL trên cùng host, mỗi node cần admin-restapi_port khác nhau</code></pre>
+  <p class="callout"><span class="callout-label">Lưu ý</span>Không nên đặt <code>scrape_interval</code> Prometheus dưới 1 giây — metrics được tính "on-demand" mỗi lần scrape, scrape quá dày không giúp gì mà chỉ tốn tài nguyên.</p>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://proxysql.com/documentation/main-runtime/multi-layer-configuration/">ProxySQL: Multi-Layer Configuration System</a>,
+    <a href="https://proxysql.com/documentation/prometheus-exporter/">ProxySQL: Prometheus Metrics</a>.
+    Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+</main>
+</body>
+</html>

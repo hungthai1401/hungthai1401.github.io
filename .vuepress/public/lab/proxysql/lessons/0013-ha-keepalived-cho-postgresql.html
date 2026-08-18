@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 13: Lớp HA/Keepalived cho ProxySQL khi backend là PostgreSQL</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+<script src="../assets/quiz.js" defer></script>
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0004-ha-theory-proxysql-cluster-keepalived.html">Lesson 0004</a> ·
+    <a href="0012-lab-postgresql-multi-replica.html">Lesson 0012</a> ·
+    Lesson 0013 ·
+    <a href="../reference/0009-proxysql-postgresql-cheatsheet.html">Reference 0009</a>
+  </p>
+  <p class="kicker">Lesson 0013 · Lý thuyết</p>
+  <h1>Lớp HA/Keepalived cho ProxySQL khi backend là PostgreSQL</h1>
+  <p><em>~10 phút đọc. Câu hỏi đặt ra: mọi thứ Lesson 4-5 dạy về Keepalived/VRRP/VIP cho ProxySQL — có cần làm khác gì khi backend là PostgreSQL thay vì MySQL không? Câu trả lời ngắn: <strong>không</strong>, gần như giống 100%. Lesson này giải thích tại sao, và chỉ ra đúng 1 điểm khác biệt thật sự cần biết.</em></p>
+
+  <h2>Vì sao lớp HA này không quan tâm backend là gì</h2>
+  <p>Nhắc lại kiến trúc từ Lesson 4 (đã kiểm chứng thật ở Lab 0005): Keepalived + VRRP tạo ra 1 <strong>Virtual IP</strong> nổi giữa nhiều node ProxySQL. VIP này hoạt động ở <strong>tầng network (Layer 3/4)</strong> — nó chuyển traffic TCP tới node ProxySQL đang giữ VIP, hoàn toàn không đọc payload bên trong. ProxySQL là thứ duy nhất "biết" backend là MySQL hay PostgreSQL; Keepalived thì không.</p>
+  <p>Vậy 3 pattern kiến trúc HA đã học ở Lesson 4 (tile pattern / single VIP / multi VIP) áp dụng <strong>nguyên vẹn</strong> khi bạn có cả MySQL và PostgreSQL phía sau — chỉ khác: mỗi ProxySQL instance giờ có thêm <code>pgsql_ifaces</code> (port 6132/6133) song song với <code>mysql_ifaces</code> (6032/6033), và VIP đó forward cả 2 loại port.</p>
+
+  <div class="quiz" data-quiz-id="0013-q1">
+    <p class="quiz-question">Keepalived quyết định node ProxySQL nào giữ VIP dựa trên điều gì?</p>
+    <ul class="quiz-options">
+      <li data-correct="false">Kiểm tra pgsql_servers có ONLINE không</li>
+      <li data-correct="true">Trạng thái VRRP priority và health check script</li>
+      <li data-correct="false">Query digest của traffic gần nhất</li>
+      <li data-correct="false">Checksum của ProxySQL Cluster</li>
+    </ul>
+  </div>
+
+  <h2>Điểm khác biệt thật sự: ProxySQL Cluster Sync cho PostgreSQL</h2>
+  <p>Nếu bạn dùng pattern <strong>nhiều ProxySQL Core node đồng bộ config qua ProxySQL Cluster</strong> (không chỉ VIP thụ động mà mọi node đều phải có cùng cấu hình) — đây là nơi backend engine mới thật sự quan trọng:</p>
+  <ul>
+    <li>ProxySQL Cluster Sync cho <strong>MySQL</strong> (<code>mysql_servers</code>, <code>mysql_users</code>, <code>mysql_query_rules</code>...) có từ bản 1.4.2 (2018) — rất trưởng thành.</li>
+    <li>ProxySQL Cluster Sync cho <strong>PostgreSQL</strong> chỉ được thêm từ bản <strong>3.0.8</strong> (theo <a href="https://proxysql.com/blog/announcing-proxysql-3-0-8/" target="_blank" rel="noopener">release note chính thức</a>), cover đúng 5 bảng: <code>pgsql_query_rules</code>, <code>pgsql_servers</code> (runtime + v2), <code>pgsql_users</code>, <code>pgsql_variables</code>, <code>pgsql_servers_ssl_params</code>.</li>
+  </ul>
+  <p class="callout"><span class="callout-label">Chưa xác nhận rõ — cần tự kiểm tra</span>Danh sách trên <strong>không nêu tên</strong> <code>pgsql_replication_hostgroups</code>. Nếu mission của bạn dựa vào ProxySQL Cluster để tất cả Core node tự đồng bộ read/write split cho PostgreSQL, đừng giả định nó hoạt động giống MySQL — dựng 1 lab nhỏ (2 ProxySQL Core node + Cluster) và thử đổi <code>pgsql_replication_hostgroups</code> trên 1 node, xem node kia có nhận được không, trước khi tin tưởng đưa vào production.</p>
+
+  <h2>Vậy thiết kế thực tế trông như thế nào?</h2>
+  <p>Với mission của bạn (MySQL + PostgreSQL cùng lúc, mission-critical, không SPOF):</p>
+  <ol>
+    <li><strong>Mỗi ProxySQL node vẫn phục vụ cả 2 engine</strong> — không cần tách riêng ProxySQL cho MySQL và ProxySQL cho PostgreSQL, vì kiến trúc ProxySQL cho phép 1 instance mở cả <code>mysql_ifaces</code> và <code>pgsql_ifaces</code> đồng thời.</li>
+    <li><strong>Lớp Keepalived/VIP giữ nguyên như Lesson 4-5</strong> — 1 VIP, forward cả port MySQL (6033) và PostgreSQL (6133) tới node ProxySQL đang active.</li>
+    <li><strong>Nếu cần ProxySQL Cluster cho tự đồng bộ config</strong>: bắt buộc ProxySQL ≥ 3.0.8 (đã ghi ở Reference 0009), và <strong>tự lab-test</strong> việc đồng bộ <code>pgsql_replication_hostgroups</code> trước khi tin dùng — đây là gap thật của tài liệu chính thức, không phải giả định an toàn.</li>
+    <li><strong>Việc dừng/thất bại bị phát hiện</strong> ở 2 tầng độc lập, không liên quan nhau: Keepalived phát hiện ProxySQL node chết (health check script + VRRP), còn PostgreSQL Monitor module bên trong ProxySQL phát hiện Postgres node chết/đổi role (<code>pg_is_in_recovery()</code>, ping) — đúng như bạn đã thấy tách bạch ở Lesson 11/12.</li>
+  </ol>
+
+  <div class="quiz" data-quiz-id="0013-q2">
+    <p class="quiz-question">ProxySQL Cluster Sync cho PostgreSQL bắt đầu có từ bản nào?</p>
+    <ul class="quiz-options">
+      <li data-correct="false">1.4.2</li>
+      <li data-correct="false">3.0.4</li>
+      <li data-correct="true">3.0.8</li>
+      <li data-correct="false">4.0.8</li>
+    </ul>
+  </div>
+
+  <h2>Có nên tự dựng lab HA kết hợp MySQL + PostgreSQL không?</h2>
+  <p>Bạn đã kiểm chứng cơ chế Keepalived/VIP thật ở Lab 0005 (dùng MySQL) — cơ chế network-layer đó không đổi khi thêm PostgreSQL phía sau, nên không cần lặp lại lab đó. Việc còn thiếu kiểm chứng thật duy nhất là <strong>ProxySQL Cluster Sync cho <code>pgsql_replication_hostgroups</code></strong> — nếu mission cần điều này, đó là ứng viên tốt cho lab tiếp theo.</p>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://proxysql.com/blog/announcing-proxysql-3-0-8/" target="_blank" rel="noopener">ProxySQL Blog — Announcing 3.0.8</a> (danh sách bảng PostgreSQL Cluster Sync),
+    <a href="https://www.proxysql.com/documentation/proxysql-cluster/" target="_blank" rel="noopener">ProxySQL Docs — ProxySQL Cluster</a>,
+    Lesson 0004/0005 (lý thuyết + lab Keepalived đã kiểm chứng).
+    Có chỗ nào chưa rõ, hỏi thêm tôi ngay trong session này.
+  </p>
+</main>
+</body>
+</html>

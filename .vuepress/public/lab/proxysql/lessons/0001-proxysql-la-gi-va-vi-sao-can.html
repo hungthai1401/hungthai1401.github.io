@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 1: ProxySQL là gì, và vì sao bạn cần nó</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> · Lesson 0001 ·
+    <a href="../reference/0001-proxysql-architecture-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0001</p>
+  <h1>ProxySQL là gì, và vì sao bạn cần nó</h1>
+  <p><em>~10 phút đọc + quiz. Bạn đã biết quản trị MySQL replication/cluster — bài này không dạy lại replication, mà dạy phần còn thiếu: điều gì xảy ra <strong>giữa</strong> application và database khi có nhiều node.</em></p>
+
+  <h2>Vì sao bài này liên quan tới mục tiêu của bạn</h2>
+  <p>Bạn đang thiết kế một stack mission-critical từ đầu. Bạn đã biết cách vận hành nhiều node MySQL. Nhưng có một câu hỏi bạn chưa trả lời: <strong>ai nói cho application biết node nào là writer, node nào là reader, và điều gì xảy ra khi writer đổi (failover)?</strong></p>
+  <p>Câu trả lời thường là một trong ba cách: (1) application tự biết và tự retry, (2) DNS/VIP trỏ thẳng vào một node, hoặc (3) một lớp proxy đứng giữa, tự theo dõi topology và route hộ. ProxySQL là lựa chọn (3), và nó là nền tảng cho toàn bộ phần còn lại của mission này.</p>
+
+  <h2>ProxySQL giải quyết vấn đề gì</h2>
+  <p>ProxySQL là một proxy <strong>hiểu protocol MySQL</strong> (Layer 7), viết bằng C++, kiến trúc async multi-threaded. Khác với một proxy TCP thuần (như HAProxy chạy ở mode L4), ProxySQL nhìn được vào <em>nội dung</em> từng câu SQL trước khi quyết định gửi nó đi đâu.</p>
+  <p>Ba việc nó làm mà một VIP/DNS đơn thuần không làm được:</p>
+  <ul>
+    <li><strong>Read/write split theo nội dung query</strong> — không chỉ theo connection, mà theo từng câu SQL, dựa trên rule bạn định nghĩa.</li>
+    <li><strong>Connection multiplexing</strong> — hàng nghìn connection từ app có thể share một pool connection nhỏ hơn tới backend, giảm tải connection cho MySQL.</li>
+    <li><strong>Theo dõi trạng thái backend liên tục</strong> — tự ping, tự đọc <code>read_only</code>, tự "shun" (loại tạm) node không khỏe, không cần app biết gì về việc này.</li>
+  </ul>
+  <p>Nói cách khác: replication của bạn tạo ra <em>nhiều node</em>; ProxySQL là thứ quyết định <em>node nào nhận câu SQL nào, ngay bây giờ</em> — và cập nhật quyết định đó liên tục khi topology thay đổi.</p>
+
+  <h2>Ba viên gạch kiến trúc cần nhớ</h2>
+  <p>ProxySQL nhóm backend MySQL vào các <strong>hostgroups</strong> (ví dụ: hostgroup 10 = writer, hostgroup 20 = reader). Mỗi query đi qua <strong>Query Processor</strong> — bộ não quyết định route/rewrite/cache/block dựa trên rule. Và toàn bộ config sống trong một SQLite nội bộ, tách lớp <code>runtime</code> (đang chạy) khỏi <code>disk</code> (đã lưu), nên đổi config <strong>không cần restart process</strong>.</p>
+  <p>Chi tiết đầy đủ hơn (threading model, cluster, bảng so sánh proxy) đã được nén vào <a href="../reference/0001-proxysql-architecture-cheatsheet.html">reference cheat sheet</a> — bạn nên mở song song khi đọc phần dưới.</p>
+
+  <h2>ProxySQL so với HAProxy và MySQL Router</h2>
+  <p>Vì hệ thống của bạn là mission-critical và chưa chốt hạ tầng, quyết định "dùng proxy nào" quan trọng hơn "dùng ProxySQL vì nó nổi tiếng". Percona đã benchmark cả ba dưới tải connection cao và tải query cao:</p>
+  <table>
+    <thead><tr><th></th><th>HAProxy</th><th>ProxySQL</th><th>MySQL Router</th></tr></thead>
+    <tbody>
+      <tr><td>Hiểu nội dung SQL</td><td>Không</td><td>Có</td><td>Có (hạn chế)</td></tr>
+      <tr><td>Dưới tải query rất cao</td><td>Ổn định nhất, CPU thấp nhất</td><td>Tốt tới một ngưỡng, rồi collapse</td><td>Yếu nhất, saturate sớm</td></tr>
+      <tr><td>Read/write split theo query rule</td><td>Không hỗ trợ</td><td>Có, chi tiết</td><td>Có, đơn giản</td></tr>
+    </tbody>
+  </table>
+  <p class="callout">
+    <span class="callout-label">Điểm mấu chốt</span>
+    Percona kết luận: trong môi trường resource-constrained kiểu Kubernetes Operator, HAProxy thắng vì rẻ tài nguyên hơn. Nhưng khi bạn cần route theo nội dung query (không chỉ theo connection) và connection pooling mạnh, ProxySQL là lựa chọn đúng — đánh đổi là tốn CPU hơn. Vì hạ tầng của bạn chưa chốt, đây là quyết định nên revisit sau khi bạn chọn VM/Docker/K8s.
+  </p>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p>Nguồn chất lượng cao nhất cho phần này: <a href="https://proxysql.com/documentation/architecture/">ProxySQL Architecture Overview</a> (tài liệu chính thức) và <a href="https://www.percona.com/blog/comparisons-of-proxies-for-mysql/">Percona: Comparisons of Proxies for MySQL</a> (benchmark thực tế). Toàn bộ nguồn đã dùng cho mission này nằm trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">1. Bạn đã có replication cho ra một writer và vài reader. Không có proxy layer, application phải tự làm điều gì mà ProxySQL sẽ làm hộ?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Track writer state itself</button></li>
+      <li><button class="quiz-option">Track reader state itself</button></li>
+      <li><button class="quiz-option">Track schema state itself</button></li>
+      <li><button class="quiz-option">Track backup state itself</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">2. Bộ phận trong ProxySQL quyết định routing, rewriting, caching, và blocking cho mỗi query được gọi là gì?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">query processor</button></li>
+      <li><button class="quiz-option">cache manager</button></li>
+      <li><button class="quiz-option">admin thread</button></li>
+      <li><button class="quiz-option">cluster module</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">3. ProxySQL nhóm các backend MySQL thành các pool logic để phân biệt writer và reader. Các pool này gọi là gì?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">host groups</button></li>
+      <li><button class="quiz-option">node pools</button></li>
+      <li><button class="quiz-option">proxy sets</button></li>
+      <li><button class="quiz-option">query groups</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">4. Theo benchmark của Percona, khi tải chuyển từ "nhiều connection" sang "nhiều query thực sự", proxy nào giữ throughput cao nhất lâu nhất nhờ thiết kế đơn giản của nó?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">The lean TCP forwarder</button></li>
+      <li><button class="quiz-option">The protocol-aware SQL proxy</button></li>
+      <li><button class="quiz-option">The official MySQL router</button></li>
+      <li><button class="quiz-option">The VIP failover manager</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    Câu hỏi mở nào cũng nên hỏi ngay AI đang dạy bạn (droid) — đừng để thắc mắc trôi qua. Lesson tiếp theo dự kiến: chọn topology MySQL (Async Replication / Group Replication / Galera-PXC) trước khi đi vào cấu hình hostgroup và query rules cụ thể.
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

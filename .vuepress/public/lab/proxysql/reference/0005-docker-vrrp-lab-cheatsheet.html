@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: Lab Keepalived/VRRP bằng Docker — giới hạn cần biết</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0005</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>Lab Keepalived/VRRP bằng Docker — giới hạn cần biết</h1>
+  <p class="callout"><span class="callout-label">Đọc trước khi chạy</span>Lab này mô phỏng, không phải bản sao chính xác của production. Ba giới hạn cụ thể của Docker khiến cách lab khác với cách bạn sẽ làm trên VM/bare-metal thật.</p>
+
+  <h2>3 giới hạn của Docker và cách lab lách qua</h2>
+  <table>
+    <thead><tr><th>Giới hạn</th><th>Vì sao</th><th>Cách lab xử lý</th></tr></thead>
+    <tbody>
+      <tr><td>Keepalived cần chung host với ProxySQL để VIP "gắn" vào đúng network interface mà ProxySQL đang lắng nghe</td><td>Trên production, Keepalived và ProxySQL là 2 process trên <em>cùng một máy</em>, chia sẻ network stack tự nhiên</td><td>Dùng <code>network_mode: "service:proxysqlN"</code> cho container keepalived — 2 container chia sẻ network namespace, coi như "cùng một máy ảo nhỏ"</td></tr>
+      <tr><td>VRRP multicast không phải lúc nào cũng ổn định qua Docker bridge network</td><td>Multicast phụ thuộc cấu hình mạng, dễ lỗi trong container</td><td>Dùng VRRP <strong>unicast</strong> (<code>unicast_peer</code>) — mỗi node gửi thẳng packet tới IP của 2 node còn lại, không cần multicast</td></tr>
+      <tr><td>Docker Desktop trên macOS không cho kết nối trực tiếp từ Terminal Mac vào IP container trên bridge network</td><td>Docker Desktop chạy container trong 1 VM Linux ẩn, không route IP container ra thẳng macOS</td><td>Test bằng container <code>client</code> riêng, chạy lệnh qua <code>docker exec lab5-client ...</code> (không thêm <code>-it</code> nếu chạy từ script/agent không có TTY), không chạy trực tiếp từ Terminal Mac</td></tr>
+    </tbody>
+  </table>
+
+  <p class="callout"><span class="callout-label">2 lỗi thực tế đã gặp khi chạy lab này</span></p>
+  <ol>
+    <li><strong>Sai đường dẫn config.</strong> Image <code>osixia/keepalived:2.0.20</code> không đọc <code>/etc/keepalived/keepalived.conf</code> — nó chạy keepalived với <code>-f /usr/local/etc/keepalived/keepalived.conf</code> (symlink tới file tự sinh từ template mặc định). Phải mount file config vào đúng <code>/usr/local/etc/keepalived/keepalived.conf</code> thì mới có hiệu lực. File trong lab đã được sửa đúng đường dẫn này.</li>
+    <li><strong>Fail-back cần restart cả sidecar keepalived, không chỉ ProxySQL.</strong> Vì <code>keepalived1</code> dùng <code>network_mode: "service:proxysql1"</code>, khi <code>proxysql1</code> chết, network namespace nó tạo ra biến mất theo. Khi bạn <code>docker start lab5-proxysql1</code> lại, container đó được cấp <strong>netns mới</strong> — nhưng <code>keepalived1</code> (đã đang "Up" từ trước) vẫn còn giữ tham chiếu tới netns cũ đã chết, không tự nhận ra netns mới. Phải <code>docker restart lab5-keepalived1</code> tường minh sau khi proxysql1 sống lại, để nó join lại đúng netns mới.</li>
+  </ol>
+
+  <h2>Sơ đồ network của lab</h2>
+  <pre><code>172.28.0.10  mysql-backend
+172.28.0.11  proxysql1  &lt;--netns chung--&gt; keepalived1 (priority 150, MASTER)
+172.28.0.12  proxysql2  &lt;--netns chung--&gt; keepalived2 (priority 100, BACKUP)
+172.28.0.13  proxysql3  &lt;--netns chung--&gt; keepalived3 (priority 50,  BACKUP)
+172.28.0.20  client (dùng để test, docker exec vào đây)
+172.28.0.100 VIP — gắn vào node có priority cao nhất còn "sống" (port 6033 mở)</code></pre>
+
+  <h2>Lệnh vận hành lab</h2>
+  <pre><code>cd lab/0005-keepalived-vip
+docker compose up -d
+
+# Xem VIP đang ở node nào (chỉ 1 trong 3 có dòng 172.28.0.100)
+docker exec lab5-keepalived1 ip addr show eth0 | grep 172.28.0.100
+docker exec lab5-keepalived2 ip addr show eth0 | grep 172.28.0.100
+docker exec lab5-keepalived3 ip addr show eth0 | grep 172.28.0.100
+
+# Test traffic qua VIP (chạy từ container client, KHÔNG chạy trực tiếp từ Mac)
+docker exec -it lab5-client mysql -h 172.28.0.100 -P 6033 -uappuser -papppass -e "SELECT 1"
+
+# Gây failover: dừng node đang giữ VIP
+docker stop lab5-proxysql1
+
+# Chờ vài giây, kiểm tra lại — VIP phải chuyển sang proxysql2
+docker exec lab5-keepalived2 ip addr show eth0 | grep 172.28.0.100
+docker exec -it lab5-client mysql -h 172.28.0.100 -P 6033 -uappuser -papppass -e "SELECT 1"
+
+# Fail-back: bật lại node ưu tiên cao nhất, RỒI restart luôn sidecar keepalived của nó
+docker start lab5-proxysql1
+docker restart lab5-keepalived1   # bắt buộc — netns cũ của keepalived1 đã chết theo proxysql1
+# VIP sẽ tự chuyển về lab5-proxysql1 sau vài giây (priority 150 > 100)</code></pre>
+
+  <h2>Dọn lab</h2>
+  <pre><code>docker compose down -v</code></pre>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://github.com/osixia/container-keepalived">osixia/keepalived Docker image</a>,
+    <a href="https://dzone.com/articles/setting-up-proxysql-for-high-availability-no-singl">Marco Tusa: Setting Up ProxySQL for High Availability</a> (cho nguyên lý VRRP/priority đã áp dụng trong lab này).
+    Xem thiết kế HA tổng thể ở <a href="0004-proxysql-ha-cheatsheet.html">Reference 0004</a>.
+  </p>
+</main>
+</body>
+</html>

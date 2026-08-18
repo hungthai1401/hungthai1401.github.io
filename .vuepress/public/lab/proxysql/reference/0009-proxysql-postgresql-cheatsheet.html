@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: ProxySQL cho PostgreSQL</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0009</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>ProxySQL cho PostgreSQL</h1>
+
+  <h2>Đổi tên bảng — mọi thứ đã học cho MySQL, đổi tiền tố</h2>
+  <table>
+    <thead><tr><th>MySQL (đã học Lesson 1-9)</th><th>PostgreSQL</th></tr></thead>
+    <tbody>
+      <tr><td><code>mysql_servers</code></td><td><code>pgsql_servers</code></td></tr>
+      <tr><td><code>mysql_users</code></td><td><code>pgsql_users</code></td></tr>
+      <tr><td><code>mysql_query_rules</code></td><td><code>pgsql_query_rules</code></td></tr>
+      <tr><td><code>mysql_replication_hostgroups</code></td><td><code>pgsql_replication_hostgroups</code></td></tr>
+      <tr><td><code>stats_mysql_connection_pool</code></td><td><code>stats_pgsql_connection_pool</code></td></tr>
+      <tr><td><code>LOAD/SAVE MYSQL ... TO RUNTIME/DISK</code></td><td><code>LOAD/SAVE PGSQL ... TO RUNTIME/DISK</code></td></tr>
+      <tr><td>Admin interface port 6032, data port 6033</td><td>Admin interface port <strong>6132</strong>, data port <strong>6133</strong></td></tr>
+      <tr><td>Client: <code>mysql</code></td><td>Client: <code>psql</code> (admin cũng nhận connection qua psql protocol)</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Tin tốt</span>Kiến trúc tổng (multi-layer config, multiplexing, monitor module, query rules, hostgroups, ProxySQL Cluster) là <strong>chung</strong> giữa 2 module — mọi khái niệm Lesson 1-9 học cho MySQL áp dụng gần như 1:1 về mặt tư duy cho PostgreSQL, chỉ đổi tên bảng/port.</p>
+
+  <h2>Setup cơ bản (song song 4 bước của Lesson 3)</h2>
+  <pre><code>-- 1. Thêm backend
+INSERT INTO pgsql_servers (hostgroup_id, hostname, port) VALUES (0, '10.0.0.1', 5432);
+LOAD PGSQL SERVERS TO RUNTIME; SAVE PGSQL SERVERS TO DISK;
+
+-- 2. Cấu hình monitor user (tạo user riêng trên PostgreSQL trước)
+UPDATE global_variables SET variable_value='monitor' WHERE variable_name='pgsql-monitor_username';
+UPDATE global_variables SET variable_value='monitor' WHERE variable_name='pgsql-monitor_password';
+LOAD PGSQL VARIABLES TO RUNTIME; SAVE PGSQL VARIABLES TO DISK;
+
+-- 3. Thêm app user
+INSERT INTO pgsql_users (username, password, default_hostgroup) VALUES ('appuser','apppass',0);
+LOAD PGSQL USERS TO RUNTIME; SAVE PGSQL USERS TO DISK;
+
+-- 4. (tuỳ chọn) query rule
+INSERT INTO pgsql_query_rules (rule_id,active,match_digest,destination_hostgroup,apply)
+  VALUES (10,1,'^SELECT .*',1,1);
+LOAD PGSQL QUERY RULES TO RUNTIME; SAVE PGSQL QUERY RULES TO DISK;</code></pre>
+  <p class="callout"><span class="callout-label">Gotcha</span>ProxySQL chưa cho đặt database riêng cho monitor user (tính tới thời điểm viết) — phải tạo 1 database riêng cho user monitor trên PostgreSQL (ví dụ database <code>proxymon</code>), không dùng chung với app database.</p>
+
+  <h2>Read/write split tự động — pgsql_replication_hostgroups</h2>
+  <p>Giống <code>mysql_replication_hostgroups</code>: khai báo <code>writer_hostgroup</code>/<code>reader_hostgroup</code>, ProxySQL tự kiểm tra <code>pg_is_in_recovery()</code> mỗi server và tự chuyển server giữa 2 hostgroup khi role đổi (failover, promote).</p>
+  <pre><code>INSERT INTO pgsql_replication_hostgroups (writer_hostgroup, reader_hostgroup, check_type)
+  VALUES (0, 1, 'read_only');
+LOAD PGSQL SERVERS TO RUNTIME;</code></pre>
+  <p><code>pgsql-monitor_writer_is_also_reader</code> (default true) — writer có tự nhận cả traffic đọc không, giống hành vi bạn đã học ở Lesson 2 cho MySQL. Đã kiểm chứng thật ở Lesson 12:</p>
+  <table>
+    <thead><tr><th>Giá trị</th><th>Khi node được promote (read_only 1→0)</th></tr></thead>
+    <tbody>
+      <tr><td><code>true</code> (default)</td><td>Copy vào writer hostgroup, <strong>vẫn ở lại</strong> reader hostgroup</td></tr>
+      <tr><td><code>false</code></td><td>Chuyển hẳn vào writer hostgroup, <strong>gỡ khỏi</strong> reader hostgroup</td></tr>
+    </tbody>
+  </table>
+
+  <h2>ProxySQL Cluster Sync cho PostgreSQL (từ 3.0.8) — bảng nào được đồng bộ</h2>
+  <p>Theo <a href="https://proxysql.com/blog/announcing-proxysql-3-0-8/" target="_blank" rel="noopener">release note chính thức 3.0.8</a>, cluster sync cho PostgreSQL cover đúng các bảng:</p>
+  <ul>
+    <li><code>pgsql_query_rules</code></li>
+    <li><code>pgsql_servers</code> (cả runtime và v2 layout)</li>
+    <li><code>pgsql_users</code></li>
+    <li><code>pgsql_variables</code></li>
+    <li><code>pgsql_servers_ssl_params</code> (bảng mới, TLS per-backend)</li>
+  </ul>
+  <p class="callout"><span class="callout-label">Đã kiểm chứng thật (Lesson 14)</span>Release note không nêu tên <code>pgsql_replication_hostgroups</code>, nhưng lab thật với 2 node Cluster (ProxySQL 3.0.10) xác nhận bảng này <strong>được đồng bộ</strong> — cùng với <code>pgsql_hostgroup_attributes</code> và <code>pgsql_servers_ssl_params</code>. Log peer thấy rõ: <code>Fetching PostgreSQL Replication Hostgroups from peer ... completed</code>. Release note chỉ thiếu chi tiết, không sai về việc có đồng bộ hay không. Lưu ý riêng: <code>stats_proxysql_servers_checksums</code> không hiện dòng nào cho bảng pgsql_* dù đồng bộ vẫn chạy — đừng dùng bảng đó để giám sát sức khoẻ sync PostgreSQL.</p>
+
+  <h2>3 điểm "còn non" cần biết trước khi đưa vào production</h2>
+  <table>
+    <thead><tr><th>Vấn đề</th><th>Chi tiết</th><th>Hành động</th></tr></thead>
+    <tbody>
+      <tr><td>Module rất mới</td><td>PostgreSQL support ra mắt ProxySQL 3.0 (09/2024) — so với module MySQL đã có từ ~2013</td><td>Test kỹ trước khi production, theo sát release notes</td></tr>
+      <tr><td>Extended Query Protocol</td><td>Driver hiện đại (libpq, psycopg2, JDBC) mặc định dùng Extended Query Protocol (Parse/Bind/Execute) — ProxySQL chỉ hỗ trợ đầy đủ từ <strong>3.0.4</strong> (trước đó chỉ Simple Query)</td><td><strong>Bắt buộc dùng ProxySQL ≥ 3.0.4</strong>, kiểm tra version trước khi triển khai</td></tr>
+      <tr><td>ProxySQL Cluster Sync cho PostgreSQL</td><td>Đồng bộ config PostgreSQL giữa các node ProxySQL Cluster chỉ được thêm từ <strong>3.0.8</strong></td><td>Nếu dùng ProxySQL Cluster (Lesson 4-5) cho cả 2 engine, cần version ≥ 3.0.8</td></tr>
+    </tbody>
+  </table>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://proxysql.com/documentation/proxysql-configuration-postgresql/">ProxySQL: How to Configure ProxySQL for PostgreSQL for the first time</a>,
+    <a href="https://proxysql.com/documentation/postgresql-backend-monitoring/">ProxySQL: PostgreSQL Monitor Module</a>,
+    <a href="https://github.com/sysown/proxysql/issues/5018">GitHub: PostgreSQL's Extended Query Protocol Support (đóng ở milestone 3.0.4)</a>,
+    <a href="https://proxysql.com/blog/announcing-proxysql-3-0-8/">ProxySQL: Announcing 3.0.8 (PostgreSQL Cluster Sync)</a>.
+    Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+</main>
+</body>
+</html>

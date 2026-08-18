@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 3 (Lab): Cài và cấu hình ProxySQL cho read/write split</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0001-proxysql-la-gi-va-vi-sao-can.html">Lesson 0001</a> ·
+    <a href="0002-chon-topology-mysql.html">Lesson 0002</a> ·
+    Lesson 0003 ·
+    <a href="../reference/0003-admin-commands-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0003 · Lab thực hành</p>
+  <h1>Cài và cấu hình ProxySQL cho read/write split</h1>
+  <p><em>~25 phút, cần Docker. Đây là lesson tay-làm đầu tiên: bạn sẽ dựng 2 node MySQL (Async Replication — topology đơn giản nhất để lab, phần này bạn đã biết), rồi cấu hình ProxySQL thật để tự route read/write.</em></p>
+
+  <h2>Vì sao lab với Async Replication trước</h2>
+  <p>Bạn chưa chốt topology cuối cùng cho production (Lesson 2 cho bạn khung quyết định). Nhưng để học <strong>cách ProxySQL được cấu hình</strong> — bảng nào, lệnh nào, thứ tự nào — Async Replication là setup nhanh nhất để dựng lab, vì bạn không cần lo cluster quorum hay wsrep. Kỹ năng cấu hình <code>mysql_servers</code>, <code>mysql_users</code>, <code>mysql_query_rules</code> ở đây <strong>giữ nguyên</strong> khi bạn chuyển sang Group Replication hay Galera — chỉ có bảng monitor hostgroup đổi (xem lại Reference 0002).</p>
+
+  <h2>Bước 1 — Dựng 2 node MySQL + 1 ProxySQL bằng Docker</h2>
+  <p>File đã có sẵn trong workspace này, tại <code>lab/0003-first-proxysql-setup/</code>:</p>
+  <pre><code>cd lab/0003-first-proxysql-setup
+docker compose up -d
+./setup.sh   # tạo replication user, trỏ replica về primary, tạo appuser/monitor user</code></pre>
+  <p><code>setup.sh</code> chỉ làm phần bạn đã biết (replication user, CHANGE REPLICATION SOURCE) — đọc qua để biết nó tạo user gì, vì ProxySQL sẽ cần đúng những user đó ở bước sau.</p>
+
+  <h2>Bước 2 — Kết nối vào Admin interface của ProxySQL</h2>
+  <pre><code>mysql -u admin -padmin -h 127.0.0.1 -P 16032 --prompt 'ProxySQL Admin&gt; '</code></pre>
+  <p>Đây thực chất là một MySQL server giả — bạn dùng SQL để đọc/sửa config, không phải sửa file. Nhớ nguyên tắc 3 lớp: sửa bảng chính → <code>LOAD ... TO RUNTIME</code> → <code>SAVE ... TO DISK</code>. Quên bước nào, config không thật sự áp dụng hoặc không sống sót qua restart.</p>
+
+  <h2>Bước 3 — Khai báo 2 backend server vào 2 hostgroup</h2>
+  <pre><code>INSERT INTO mysql_servers(hostgroup_id,hostname,port) VALUES (1,'mysql-primary',3306);
+INSERT INTO mysql_servers(hostgroup_id,hostname,port) VALUES (2,'mysql-replica',3306);</code></pre>
+  <p>Hostgroup 1 = writer (dự kiến), hostgroup 2 = reader (dự kiến) — nhưng ProxySQL sẽ tự xác nhận lại dựa trên <code>read_only</code>, không phải dựa vào con số bạn gõ.</p>
+
+  <h2>Bước 4 — Cấu hình monitor user</h2>
+  <pre><code>UPDATE global_variables SET variable_value='monitor' WHERE variable_name='mysql-monitor_username';
+UPDATE global_variables SET variable_value='monitor' WHERE variable_name='mysql-monitor_password';
+LOAD MYSQL VARIABLES TO RUNTIME;
+SAVE MYSQL VARIABLES TO DISK;</code></pre>
+  <p>User <code>monitor</code> đã được <code>setup.sh</code> tạo sẵn ở bước 1 (quyền <code>REPLICATION CLIENT</code>). Đây là user riêng ProxySQL dùng để tự ping/kiểm tra backend — không phải user application.</p>
+
+  <h2>Bước 5 — Khai báo writer/reader hostgroup theo <code>read_only</code></h2>
+  <pre><code>INSERT INTO mysql_replication_hostgroups (writer_hostgroup,reader_hostgroup,comment)
+  VALUES (1,2,'lab-cluster');
+LOAD MYSQL SERVERS TO RUNTIME;</code></pre>
+  <p>Đây chính là bảng đã nói ở Lesson 2 — cho Async Replication, ProxySQL chỉ cần đọc <code>read_only</code>: node có <code>read_only=0</code> vào hostgroup 1, node có <code>read_only=1</code> vào hostgroup 2. Kiểm tra ngay:</p>
+  <pre><code>SELECT * FROM monitor.mysql_server_read_only_log ORDER BY time_start_us DESC LIMIT 5;</code></pre>
+
+  <h2>Bước 6 — Thêm user application</h2>
+  <pre><code>INSERT INTO mysql_users(username,password,default_hostgroup) VALUES ('appuser','apppass',1);
+LOAD MYSQL USERS TO RUNTIME;
+SAVE MYSQL USERS TO DISK;</code></pre>
+  <p><code>default_hostgroup=1</code> nghĩa là: nếu không có query rule nào match, mọi query của <code>appuser</code> đi vào writer. An toàn hơn là default vào reader — tránh lỡ ghi nhầm vào node chỉ-đọc.</p>
+
+  <h2>Bước 7 — Query rule cho read/write split</h2>
+  <pre><code>INSERT INTO mysql_query_rules (rule_id,active,match_digest,destination_hostgroup,apply)
+  VALUES (1,1,'^SELECT.*FOR UPDATE$',1,1);
+INSERT INTO mysql_query_rules (rule_id,active,match_digest,destination_hostgroup,apply)
+  VALUES (2,1,'^SELECT',2,1);
+LOAD MYSQL QUERY RULES TO RUNTIME;
+SAVE MYSQL QUERY RULES TO DISK;</code></pre>
+  <p>Rule chạy theo <code>rule_id</code> tăng dần, dừng lại khi gặp rule có <code>apply=1</code> match. Rule 1 phải đứng trước rule 2: <code>SELECT ... FOR UPDATE</code> cần khoá dòng thật trên writer, nếu rule 2 (mọi <code>SELECT</code> ra reader) chạy trước, nó sẽ route sai.</p>
+
+  <h2>Bước 8 — Xác nhận bằng traffic thật</h2>
+  <pre><code>mysql -u appuser -papppass -h 127.0.0.1 -P 16033 -e "SELECT @@hostname, @@read_only;"
+mysql -u appuser -papppass -h 127.0.0.1 -P 16033 -e "SELECT @@hostname, @@read_only FOR UPDATE;" -e "BEGIN;" 2>/dev/null || true
+SELECT * FROM stats_mysql_connection_pool;   -- chạy trong Admin interface, xem traffic vào hostgroup nào</code></pre>
+  <p>Câu <code>SELECT</code> thường phải trả về hostname của <code>mysql-replica</code>. Nếu bạn tắt container primary (<code>docker stop lab-mysql-primary</code>) và chạy lại lệnh <code>SELECT ... FOR UPDATE</code>-style ghi, ProxySQL sẽ trả lỗi kết nối tới writer — vì Async Replication không có failover tự động (đúng như Lesson 2 đã nói). Đây là lúc bạn thấy rõ giới hạn thật của topology mình chọn để lab.</p>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p><a href="https://proxysql.com/documentation/proxysql-configuration/">ProxySQL: How to Configure ProxySQL for MySQL for the First Time</a> — toàn bộ trình tự trên bám theo doc chính thức này. Đầy đủ nguồn trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="1">
+    <p class="quiz-question">1. Bạn vừa sửa bảng mysql_query_rules và chạy LOAD MYSQL QUERY RULES TO RUNTIME, nhưng chưa chạy SAVE ... TO DISK. Điều gì xảy ra nếu ProxySQL process restart ngay bây giờ?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Rule mới vẫn còn nguyên</button></li>
+      <li><button class="quiz-option">Rule mới sẽ bị mất hết</button></li>
+      <li><button class="quiz-option">Rule mới tự lưu xuống disk</button></li>
+      <li><button class="quiz-option">Rule mới chuyển sang backup</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">2. Vì sao rule chặn "SELECT ... FOR UPDATE" ra writer phải có rule_id nhỏ hơn rule route SELECT thường ra reader?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Rule chạy theo rule_id tăng dần, dừng khi apply=1 match</button></li>
+      <li><button class="quiz-option">Rule_id nhỏ hơn chạy nhanh hơn về tốc độ CPU</button></li>
+      <li><button class="quiz-option">Rule_id nhỏ hơn được cache lâu hơn</button></li>
+      <li><button class="quiz-option">Rule_id không ảnh hưởng, chỉ để đặt tên</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="2">
+    <p class="quiz-question">3. Nếu bạn tắt hẳn container mysql-primary trong lab này, điều gì xảy ra với các query ghi đi qua ProxySQL?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">ProxySQL tự bầu replica làm writer mới</button></li>
+      <li><button class="quiz-option">ProxySQL tự tạo writer_hostgroup mới</button></li>
+      <li><button class="quiz-option">Query ghi lỗi vì không có writer, cần tool ngoài</button></li>
+      <li><button class="quiz-option">Query ghi tự chuyển sang cache tạm</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    Nếu lab bị lỗi ở bước nào, dán log/lỗi cho droid ngay, đừng đoán mò. Lesson tiếp theo dự kiến: thiết kế ProxySQL tự nó có HA (ProxySQL Cluster + VIP) — để tầng proxy không phải điểm chết duy nhất, đúng như mục tiêu mission-critical trong mission của bạn.
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

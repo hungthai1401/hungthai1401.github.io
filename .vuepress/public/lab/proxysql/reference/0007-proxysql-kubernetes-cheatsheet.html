@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: ProxySQL trên Kubernetes</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0007</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>ProxySQL trên Kubernetes</h1>
+
+  <h2>Service thay Keepalived+VIP</h2>
+  <table>
+    <thead><tr><th>Ở VM (Lesson 4-5)</th><th>Ở K8s</th></tr></thead>
+    <tbody>
+      <tr><td>VIP (172.28.0.100) do Keepalived quản lý</td><td>ClusterIP của Service (do kube-proxy quản lý)</td></tr>
+      <tr><td>VRRP health-check script (check port 6033)</td><td><code>readinessProbe</code> trên pod</td></tr>
+      <tr><td>Priority + preemption để chọn MASTER</td><td>kube-proxy round-robin/least-conn qua mọi pod Ready</td></tr>
+      <tr><td>Failover: chuyển VIP sang node khác (giây)</td><td>Failover: pod hết Ready bị rút khỏi Endpoints (theo probe interval, thường &lt;10s)</td></tr>
+      <tr><td>Fail-back: cần tự tay đảm bảo (xem bug lab 0005)</td><td>Fail-back: tự động — pod Ready lại thì tự vào lại Endpoints, không cần thao tác gì thêm</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Vì sao đơn giản hơn</span>Không có concept "MASTER/BACKUP" hay split-brain kiểu VRRP. Mọi pod ProxySQL Ready đều nhận traffic ngang hàng — đổi lấy việc bạn không kiểm soát được "node nào đang là preferred writer path" như Keepalived priority, nhưng bù lại không có lớp phức tạp VRRP/netns nữa.</p>
+
+  <h2>Hai cách triển khai ProxySQL trong K8s</h2>
+  <table>
+    <thead><tr><th>Pattern</th><th>Mô tả</th><th>Khi nào dùng</th></tr></thead>
+    <tbody>
+      <tr><td>Sidecar/helper container</td><td>1 ProxySQL container trong mỗi app pod, app nối tới <code>localhost:6033</code></td><td>Muốn giảm 1 hop network, không cần scale ProxySQL độc lập với app</td></tr>
+      <tr><td>Centralized Deployment/StatefulSet + Service</td><td>N pod ProxySQL độc lập, có Service riêng, app nối qua tên Service</td><td>Muốn scale/patch ProxySQL độc lập app, dùng được từ ngoài cluster — pattern khuyến nghị cho mission-critical</td></tr>
+    </tbody>
+  </table>
+
+  <h2>StatefulSet hay Deployment cho pattern centralized?</h2>
+  <ul>
+    <li><strong>Deployment</strong> đủ dùng nếu mỗi pod ProxySQL tự quản lý config riêng (không cần biết tới nhau) — ví dụ dùng ConfigMap giống nhau cho mọi pod, hoặc dùng cơ chế "scheduler" tự động của Percona Operator.</li>
+    <li><strong>StatefulSet</strong> cần khi dùng <strong>ProxySQL Cluster native</strong> (mysql_servers table có <code>proxysql_servers</code> trỏ tới hostname của peer) — Percona Operator dùng StatefulSet (<code>cluster1-proxysql-0/1/2</code>) + headless Service chính vì lý do này: peer cần DNS ổn định để tìm nhau.</li>
+  </ul>
+
+  <h2>HAProxy vs ProxySQL trong K8s — theo Percona</h2>
+  <table>
+    <thead><tr><th></th><th>HAProxy</th><th>ProxySQL</th></tr></thead>
+    <tbody>
+      <tr><td>Nhận biết SQL?</td><td>Không — chỉ route theo TCP/health</td><td>Có — phân biệt SELECT vs INSERT/UPDATE, route theo query rule</td></tr>
+      <tr><td>Resource overhead trong K8s</td><td>Thấp, benchmark Percona cho thấy hiệu quả hơn</td><td>Cao hơn, cần size CPU/mem cẩn thận hơn</td></tr>
+      <tr><td>Đổi app code để tách read/write?</td><td>Cần — app phải tự gửi đúng port cho write vs read</td><td>Không cần — ProxySQL tự phân loại theo query pattern</td></tr>
+      <tr><td>Query cache, connection multiplexing, query rules?</td><td>Không có</td><td>Có</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Khuyến nghị của Percona</span>HAProxy nếu muốn đơn giản/nhẹ và không cần route theo query. ProxySQL nếu cần read/write splitting mà không sửa app, hoặc cần query rule phức tạp. Với mission của bạn (mission-critical, đã quen thuộc với concept proxy-layer routing mà các lesson trước đã học), ProxySQL vẫn hợp lý hơn — chỉ cần size resource requests/limits đúng, không dùng default nhỏ.</p>
+
+  <h2>Percona Operator: proxy layer thật trông thế nào</h2>
+  <ul>
+    <li>Service <code>cluster1-proxysql</code> expose port <strong>3306</strong> (đúng port MySQL chuẩn — app không cần biết đang qua proxy), <strong>33062</strong> (Admin interface), <strong>6070</strong> (Prometheus exporter, xem Lesson 6)</li>
+    <li>Ghi đè config qua <code>deploy/cr.yaml</code> (field <code>proxysql.configuration</code>), ConfigMap, hoặc Secret — cả 3 cách đều yêu cầu paste <strong>toàn bộ</strong> nội dung <code>proxysql.cnf</code>, không phải chỉ phần muốn đổi</li>
+    <li><strong>Áp ConfigMap mới → cluster restart</strong>. Đây khác với workflow "LOAD TO RUNTIME không downtime" ở Lesson 6 — trong K8s, cách "GitOps" (đổi ConfigMap, apply, để Operator tự rolling-restart) phổ biến hơn là login Admin interface để đổi live. Muốn đổi live không restart vẫn được (kubectl exec vào pod, dùng Admin interface như Lesson 3/6), nhưng cần tự đồng bộ qua mọi pod nếu không dùng ProxySQL Cluster.</li>
+    <li>ProxySQL scheduler (tech preview, từ Operator 1.19+): tool ngoài (<code>pxc_scheduler_handler</code>) tự quản lý hostgroup reader/writer chính xác hơn scheduler nội bộ của ProxySQL — nhưng bật nó thì <strong>tắt luôn ProxySQL Cluster</strong> (2 cơ chế không tương thích), mỗi pod tự quản mysql_servers độc lập.</li>
+  </ul>
+
+  <h2>Readiness probe — điểm mấu chốt để "no SPOF" hoạt động</h2>
+  <p>Chỉ check "port 6033 mở" là chưa đủ (ProxySQL vẫn accept TCP dù mọi backend đều down). Probe tốt hơn nên chạy một query thật qua ProxySQL, ví dụ:</p>
+  <pre><code>readinessProbe:
+  exec:
+    command: ["mysql", "-h127.0.0.1", "-P6033", "-uhealthcheck", "-e", "SELECT 1"]
+  periodSeconds: 5
+  failureThreshold: 2</code></pre>
+  <p>Pod fail probe → kube-proxy tự rút khỏi Endpoints của Service trong vài giây, không cần Keepalived/VRRP.</p>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://severalnines.com/blog/running-proxysql-kubernetes-service/">Severalnines: Running ProxySQL as Kubernetes Service</a>,
+    <a href="https://docs.percona.com/percona-operator-for-mysql/pxc/load-balancing.html">Percona Operator: Configure load balancing (HAProxy vs ProxySQL)</a>,
+    <a href="https://docs.percona.com/percona-operator-for-mysql/pxc/proxysql-conf.html">Percona Operator: Configuring load balancing with ProxySQL</a>.
+    Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+</main>
+</body>
+</html>

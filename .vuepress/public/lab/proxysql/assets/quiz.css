@@ -1,0 +1,62 @@
+/* Quiz widget styles — pairs with quiz.js. Depends on style.css tokens. */
+
+.quiz {
+  margin: 1.8rem 0;
+  padding: 1.2rem 1.3rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: #fbfaf6;
+}
+
+.quiz-question {
+  font-family: -apple-system, "Helvetica Neue", sans-serif;
+  font-weight: 600;
+  margin-bottom: 0.8rem;
+}
+
+.quiz-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.quiz-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: -apple-system, "Helvetica Neue", sans-serif;
+  font-size: 0.95rem;
+  background: white;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.55rem 0.8rem;
+  margin: 0.35rem 0;
+  cursor: pointer;
+  color: var(--ink);
+}
+.quiz-option:hover { border-color: var(--accent); }
+.quiz-option:disabled { cursor: default; }
+
+.quiz-option.correct {
+  background: #e9f2e4;
+  border-color: #4a7a3d;
+}
+.quiz-option.incorrect {
+  background: #f6e5e3;
+  border-color: var(--accent);
+}
+
+.quiz-feedback {
+  font-family: -apple-system, "Helvetica Neue", sans-serif;
+  font-size: 0.88rem;
+  margin-top: 0.6rem;
+  min-height: 1.1rem;
+}
+
+.quiz-score {
+  font-family: -apple-system, "Helvetica Neue", sans-serif;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-align: right;
+  margin-top: 1rem;
+}

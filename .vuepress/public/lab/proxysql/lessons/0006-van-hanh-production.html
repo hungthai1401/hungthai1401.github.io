@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 6: Vận hành ProxySQL trên production</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0005-lab-keepalived-vip-failover.html">Lesson 0005</a> ·
+    Lesson 0006 ·
+    <a href="../reference/0006-ops-monitoring-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0006</p>
+  <h1>Vận hành ProxySQL trên production</h1>
+  <p><em>~12 phút đọc + quiz. Bạn đã có kiến trúc (Lesson 1-2), đã cấu hình được (Lesson 3), đã làm nó không SPOF (Lesson 4-5). Lesson này đóng nốt mảnh cuối: đổi config production mà không gây downtime, và biết ngay khi có gì bất thường.</em></p>
+
+  <h2>Đính chính nhỏ từ Lesson 3</h2>
+  <p>Ở Lesson 3, tôi nói ProxySQL có 3 lớp config (bảng chính → runtime → disk). Chính xác hơn là <strong>4 lớp</strong>: RUNTIME, MEMORY (chính là "bảng chính" tôi nói), DISK, và CONFIG FILE — lớp cuối chỉ dùng lúc bootstrap lần đầu (<code>proxysql.cnf</code>, khởi động với <code>--initial</code>), không dùng để đổi config hàng ngày. Từ giờ tôi gọi đúng tên: MEMORY (không phải "bảng chính") để khớp thuật ngữ chính thức.</p>
+
+  <h2>Rollback bạn đã có sẵn, không cần backup gì thêm</h2>
+  <p>Đây là điểm hay nhất của kiến trúc 4 lớp: <strong>DISK luôn là bản "known good" cuối cùng bạn chủ động lưu</strong>. Nghĩa là:</p>
+  <ul>
+    <li>Bạn sửa MEMORY, chạy <code>LOAD ... TO RUNTIME</code>, thấy sai ngay → chạy <code>LOAD ... FROM DISK</code> (nạp lại bản cũ) rồi <code>LOAD ... TO RUNTIME</code> lại — hoặc đơn giản hơn, restart ProxySQL, nó tự nạp từ DISK. <strong>Chưa mất gì</strong>, vì bạn chưa <code>SAVE TO DISK</code>.</li>
+    <li>Bạn đã <code>SAVE TO DISK</code> rồi mới phát hiện sai → hết đường rollback tự động. Đây là lý do quy tắc production quan trọng nhất là: <strong>không bao giờ SAVE TO DISK ngay sau LOAD TO RUNTIME</strong> — luôn có một khoảng quan sát traffic thật ở giữa.</li>
+  </ul>
+  <p class="callout"><span class="callout-label">Checklist đổi config</span>1) Backup <code>proxysql.db</code> trước khi sửa lớn · 2) Sửa MEMORY bằng SQL · 3) <code>LOAD ... TO RUNTIME</code> · 4) Quan sát vài phút qua <code>stats_mysql_connection_pool</code> · 5) Ổn thì <code>SAVE TO DISK</code>, không ổn thì <code>LOAD ... FROM DISK</code>.</p>
+
+  <h2>Ba bảng bạn nên nhìn mỗi ngày</h2>
+  <p>Không cần dashboard cầu kỳ ngay từ đầu — 3 câu query này trả lời được hầu hết câu hỏi "có gì bất thường không?":</p>
+  <pre><code>-- Node nào lỗi connection nhiều? Hostgroup nào quá tải?
+SELECT hostgroup, srv_host, status, ConnUsed, ConnERR, Queries
+FROM stats_mysql_connection_pool ORDER BY ConnERR DESC;
+
+-- Query nào chạy nhiều/chậm nhất, đang route vào hostgroup nào?
+SELECT hostgroup, digest_text, count_star, sum_time
+FROM stats_mysql_query_digest ORDER BY sum_time DESC LIMIT 10;
+
+-- Backend có đang bị flapping read_only không? (dấu hiệu bất ổn ở tầng MySQL)
+SELECT * FROM monitor.mysql_server_read_only_log ORDER BY time_start_us DESC LIMIT 10;</code></pre>
+
+  <h2>Bật monitoring tự động (Prometheus)</h2>
+  <p>Từ ProxySQL 2.x có exporter built-in, không cần cài thêm gì:</p>
+  <pre><code>SET admin-restapi_enabled='true';
+LOAD ADMIN VARIABLES TO RUNTIME;
+-- http://&lt;proxysql-host&gt;:6070/metrics — trỏ Prometheus vào đây</code></pre>
+  <p>Nếu chạy 3 node ProxySQL trên cùng máy (như lab Keepalived ở Lesson 5), mỗi node cần <code>admin-restapi_port</code> khác nhau, không thì service không start được. Và đừng scrape dưới 1 giây — metrics tính on-demand mỗi lần scrape, scrape dày không giúp gì.</p>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p><a href="https://proxysql.com/documentation/main-runtime/multi-layer-configuration/">ProxySQL: Multi-Layer Configuration System</a> và <a href="https://proxysql.com/documentation/prometheus-exporter/">ProxySQL: Prometheus Metrics</a>. Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="1">
+    <p class="quiz-question">1. Bạn vừa LOAD MYSQL QUERY RULES TO RUNTIME và thấy traffic route sai, nhưng CHƯA chạy SAVE TO DISK. Cách rollback nhanh nhất?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Sửa lại rule rồi hy vọng đúng</button></li>
+      <li><button class="quiz-option">LOAD MYSQL QUERY RULES FROM DISK rồi LOAD TO RUNTIME</button></li>
+      <li><button class="quiz-option">Xoá toàn bộ mysql_query_rules</button></li>
+      <li><button class="quiz-option">Restart lại toàn bộ MySQL backend</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="2">
+    <p class="quiz-question">2. Vì sao quy tắc production nói không nên SAVE TO DISK ngay sau LOAD TO RUNTIME?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">SAVE TO DISK làm ProxySQL restart</button></li>
+      <li><button class="quiz-option">SAVE TO DISK chạy rất chậm, tốn CPU</button></li>
+      <li><button class="quiz-option">Cần thời gian quan sát trước khi biến thành bản khó rollback</button></li>
+      <li><button class="quiz-option">SAVE TO DISK yêu cầu restart ProxySQL Cluster</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">3. Bảng nào cho biết node MySQL nào đang bị lỗi connection nhiều hoặc hostgroup nào quá tải?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">stats_mysql_connection_pool</button></li>
+      <li><button class="quiz-option">mysql_query_rules</button></li>
+      <li><button class="quiz-option">proxysql_servers</button></li>
+      <li><button class="quiz-option">global_variables</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    Đến đây, mission "ProxySQL cho production mission-critical" đã có đủ khung: kiến trúc, chọn topology, cấu hình, HA cho proxy layer, và vận hành an toàn. Nếu bạn đã có quyết định thật về hạ tầng (VM/Docker/K8s) hoặc topology MySQL, nói cho tôi để lesson tiếp theo đi thẳng vào chi tiết đúng bối cảnh đó — ví dụ cấu hình mysql_group_replication_hostgroups thật, hoặc thiết kế Terraform/Ansible cho stack này.
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 7: Thiết kế ProxySQL trên Kubernetes</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0006-van-hanh-production.html">Lesson 0006</a> ·
+    Lesson 0007 ·
+    <a href="../reference/0007-proxysql-kubernetes-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0007</p>
+  <h1>Thiết kế ProxySQL trên Kubernetes</h1>
+  <p><em>~15 phút đọc + quiz. Câu hỏi bạn đặt ra — "nếu chạy trên K8s thì sao?" — thực ra làm cả Lesson 4-5 (Keepalived/VRRP) đơn giản đi rất nhiều. Lesson này giải thích vì sao, và điểm nào bạn phải đánh đổi.</em></p>
+
+  <h2>Tin tốt trước: Service đã thay Keepalived làm gần hết việc</h2>
+  <p>Ở Lesson 4-5, bạn tốn khá nhiều công dựng VRRP + VIP để proxy layer không có SPOF: Keepalived, priority, unicast peers, health-check script, và một con bug thực tế về fail-back. Trong K8s, phần lớn việc đó đã có sẵn miễn phí:</p>
+  <table>
+    <thead><tr><th>Ở VM (bạn đã học)</th><th>Ở K8s</th></tr></thead>
+    <tbody>
+      <tr><td>VIP do Keepalived quản lý</td><td>ClusterIP của một <code>Service</code></td></tr>
+      <tr><td>Health-check script cho VRRP</td><td><code>readinessProbe</code> trên pod</td></tr>
+      <tr><td>Priority + preemption chọn MASTER</td><td>kube-proxy route đều tới mọi pod đang Ready</td></tr>
+      <tr><td>Fail-back phải tự đảm bảo (bug bạn gặp ở lab 0005)</td><td>Tự động — pod Ready lại là vào lại Endpoints ngay</td></tr>
+    </tbody>
+  </table>
+  <p>Đổi lại: bạn không còn khái niệm "node ưu tiên nhất luôn được chọn trước" như priority của Keepalived — mọi pod ProxySQL Ready đều ngang hàng nhận traffic. Với mission "không SPOF" của bạn, đây là đánh đổi tốt: đơn giản hơn, ít thành phần cần vận hành hơn (không VRRP, không netns tricks).</p>
+
+  <h2>Hai cách đặt ProxySQL trong kiến trúc K8s</h2>
+  <p><strong>1. Sidecar/helper container</strong> — mỗi app pod có 1 container ProxySQL đi kèm, app gọi <code>localhost:6033</code>. Giảm 1 network hop, nhưng số instance ProxySQL tăng theo số app pod — khó tách biệt scale/patch proxy layer khỏi app layer.</p>
+  <p><strong>2. Centralized Deployment/StatefulSet + Service</strong> (giống pattern bạn đã quen ở Lesson 4-5, chỉ khác cơ chế bên dưới) — N pod ProxySQL độc lập, có Service riêng, mọi app trong cluster nối qua tên Service đó. Đây là pattern khuyến nghị cho mission-critical vì bạn scale/patch/monitor proxy layer tách biệt khỏi app.</p>
+
+  <h2>StatefulSet hay Deployment?</h2>
+  <p>Câu trả lời phụ thuộc bạn có dùng <strong>ProxySQL Cluster native</strong> (cái bạn học ở Lesson 4 — các pod tự đồng bộ config qua checksum) hay không:</p>
+  <ul>
+    <li>Không dùng ProxySQL Cluster (mỗi pod tự quản config riêng qua ConfigMap giống nhau) → <code>Deployment</code> đủ, pod tên/IP ngẫu nhiên không sao.</li>
+    <li>Dùng ProxySQL Cluster → cần <code>StatefulSet</code> + headless Service, vì các pod cần DNS ổn định để tìm nhau trong bảng <code>proxysql_servers</code>. Đây chính xác là cách Percona Operator làm: pod tên <code>cluster1-proxysql-0/1/2</code>.</li>
+  </ul>
+
+  <h2>Câu hỏi bạn chưa hỏi nhưng nên biết: HAProxy hay ProxySQL trong K8s?</h2>
+  <p>Percona — người vận hành Operator quản lý cả 2 proxy — nói thẳng: <strong>HAProxy hiệu quả tài nguyên hơn trong K8s</strong> theo benchmark của họ, vì nó không phân tích SQL, chỉ route TCP. ProxySQL nặng hơn vì phải parse từng query để phân loại SELECT vs INSERT/UPDATE.</p>
+  <p class="callout"><span class="callout-label">Vậy chọn cái nào cho mission của bạn?</span>Điểm bán hàng lớn nhất của ProxySQL — mà các lesson trước đã dạy bạn tận dụng (query rules, hostgroup theo topology, read/write splitting không cần sửa app) — vẫn đúng nguyên trong K8s. HAProxy không làm được việc đó; muốn tách read/write với HAProxy, bạn phải tự sửa app gửi đúng port. Nếu mission của bạn cần route theo query (rất có thể, vì bạn đã đầu tư học query rules), giữ ProxySQL — chỉ cần <strong>size CPU/memory request/limit đúng</strong> thay vì dùng default, đừng để nó là điểm nghẽn tài nguyên trong cluster.</p>
+
+  <h2>Một khác biệt vận hành quan trọng so với Lesson 6</h2>
+  <p>Ở Lesson 6, workflow đổi config an toàn là: sửa MEMORY → <code>LOAD TO RUNTIME</code> → quan sát → <code>SAVE TO DISK</code> — hoàn toàn không cần restart. Trong K8s, cách phổ biến hơn (kiểu "GitOps") là: sửa ConfigMap → <code>kubectl apply</code> → Operator/bạn tự rolling-restart pod để nạp config mới. Đây là restart, có downtime ngắn nếu không rolling đúng cách (nhưng với nhiều replica sau Service, rolling restart từng pod một thì Service vẫn phục vụ liên tục).</p>
+  <p>Bạn vẫn có thể làm kiểu Lesson 6 (login Admin interface qua <code>kubectl exec</code>, LOAD TO RUNTIME live không restart) — chỉ là bạn phải tự lặp lại trên từng pod nếu không dùng ProxySQL Cluster để đồng bộ.</p>
+
+  <h2>Readiness probe — điểm quyết định "no SPOF" có thật hay không</h2>
+  <p>Nếu probe chỉ check "port 6033 có mở", một ProxySQL pod vẫn "Ready" dù toàn bộ MySQL backend đã chết (ProxySQL vẫn nhận TCP, chỉ là mọi query sẽ lỗi). Probe đúng nên chạy thử một query thật:</p>
+  <pre><code>readinessProbe:
+  exec:
+    command: ["mysql", "-h127.0.0.1", "-P6033", "-uhealthcheck", "-e", "SELECT 1"]
+  periodSeconds: 5
+  failureThreshold: 2</code></pre>
+  <p>Đây chính là tinh thần <code>check_proxysql.sh</code> bạn đã viết cho lab Keepalived ở Lesson 5 — chỉ khác chỗ chạy (K8s tự gọi probe, không cần Keepalived script riêng).</p>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p><a href="https://severalnines.com/blog/running-proxysql-kubernetes-service/">Severalnines: Running ProxySQL as Kubernetes Service</a>, <a href="https://docs.percona.com/percona-operator-for-mysql/pxc/load-balancing.html">Percona Operator: Configure load balancing</a>, <a href="https://docs.percona.com/percona-operator-for-mysql/pxc/proxysql-conf.html">Percona Operator: Configuring ProxySQL</a>. Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="1">
+    <p class="quiz-question">1. Trong K8s, thành phần nào đóng vai trò tương đương VIP của Keepalived ở Lesson 4-5?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">NodePort của worker node</button></li>
+      <li><button class="quiz-option">ClusterIP của Service</button></li>
+      <li><button class="quiz-option">PersistentVolumeClaim</button></li>
+      <li><button class="quiz-option">Namespace</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="2">
+    <p class="quiz-question">2. Vì sao Percona Operator dùng StatefulSet (không phải Deployment) cho ProxySQL khi bật ProxySQL Cluster?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">StatefulSet chạy nhanh hơn Deployment</button></li>
+      <li><button class="quiz-option">ProxySQL chỉ chạy được trên StatefulSet</button></li>
+      <li><button class="quiz-option">Các pod cần DNS ổn định để tìm nhau trong proxysql_servers</button></li>
+      <li><button class="quiz-option">StatefulSet không cần readinessProbe</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">3. Vì sao readiness probe chỉ check "port 6033 mở" là không đủ để đảm bảo "no SPOF" thật?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Pod vẫn Ready dù mọi backend MySQL đã chết, vì port vẫn accept TCP</button></li>
+      <li><button class="quiz-option">Port 6033 không tồn tại trong K8s</button></li>
+      <li><button class="quiz-option">kube-proxy không đọc được port TCP</button></li>
+      <li><button class="quiz-option">Probe TCP luôn chậm hơn probe exec</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    Đây là góc nhìn K8s cho phần proxy layer. Muốn đi tiếp: (1) chi tiết MySQL backend layer trên K8s (StatefulSet PXC/Group Replication thật, storage, backup) — hoặc (2) một lab tay thật với kind/minikube + ProxySQL Deployment+Service để tự tay thấy Service failover, giống cách bạn đã tự tay thấy Keepalived failover ở Lesson 5. Bạn muốn đi hướng nào?
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Cheat sheet: ProxySQL HA — Cluster + Keepalived/VIP</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print"><a href="../MISSION.md">Mission</a> · Reference 0004</p>
+  <p class="kicker">Reference · in tham khảo nhanh</p>
+  <h1>ProxySQL HA — Cluster + Keepalived/VIP</h1>
+  <p class="callout"><span class="callout-label">Sự thật cần nhớ</span>ProxySQL <strong>không tự có</strong> cơ chế HA cho traffic của client. ProxySQL Cluster chỉ đồng bộ <em>config</em> giữa các node — không có VIP, không failover connection tự động. Bạn luôn cần thêm một lớp network riêng (Keepalived, load balancer, DNS) để client luôn trỏ vào node ProxySQL còn sống.</p>
+
+  <h2>Hai việc cần làm, độc lập với nhau</h2>
+  <table>
+    <thead><tr><th>Việc</th><th>Công cụ</th><th>Giải quyết gì</th></tr></thead>
+    <tbody>
+      <tr><td>Đồng bộ config giữa các node ProxySQL</td><td>ProxySQL Cluster (native)</td><td>Users, query rules, servers... giống nhau trên mọi node, không phải tự tay chạy Ansible mỗi lần đổi</td></tr>
+      <tr><td>Client luôn trỏ vào node ProxySQL còn sống</td><td>Keepalived + VRRP (VIP)</td><td>Traffic failover khi 1 node ProxySQL chết</td></tr>
+    </tbody>
+  </table>
+
+  <h2>ProxySQL Cluster — lệnh cốt lõi</h2>
+  <pre><code>-- Trên 1 node đang chạy, thêm node mới vào danh sách Core
+INSERT INTO proxysql_servers (hostname, port) VALUES ('10.0.0.5', 6032);
+LOAD PROXYSQL SERVERS TO RUNTIME;
+SAVE PROXYSQL SERVERS TO DISK;
+
+-- Kiểm tra cluster đã thấy node mới chưa
+SELECT * FROM stats_proxysql_servers_checksums;</code></pre>
+  <p>Cần đặt <code>cluster_username</code>/<code>cluster_password</code> giống nhau trên mọi node (qua <code>global_variables</code>) để các node tin nhau khi đồng bộ. Lưu ý: kênh giao tiếp Cluster luôn là <strong>admin port MySQL protocol</strong> (thường 6032) — kể cả khi bạn chỉ đồng bộ config PostgreSQL (<code>pgsql_*</code>), xem Lesson 14.</p>
+  <p class="callout"><span class="callout-label">Gotcha đã gặp thật (Lesson 14)</span>Nếu 2 node cùng thêm nhau vào <code>proxysql_servers</code> ở đúng cùng epoch (cùng giây), Cluster báo <code>Sync conflict, epoch times are EQUAL</code> và dừng đồng bộ bảng đó. Khắc phục: chạy lại <code>LOAD PROXYSQL SERVERS TO RUNTIME</code> trên node muốn làm nguồn sự thật để tạo epoch mới.</p>
+  <p class="callout"><span class="callout-label">Đã kiểm chứng cho PostgreSQL (Lesson 14)</span>ProxySQL Cluster Sync (≥3.0.8) đồng bộ đầy đủ cả <code>pgsql_servers</code>, <code>pgsql_replication_hostgroups</code>, <code>pgsql_query_rules</code>, <code>pgsql_variables</code> — kể cả những bảng không được nêu tên rõ trong release note. Xem chi tiết ở <a href="0009-proxysql-postgresql-cheatsheet.html">Reference 0009</a>.</p>
+
+  <h2>Keepalived — pattern "single VIP" (active-passive)</h2>
+  <pre><code># /etc/keepalived/keepalived.conf trên mỗi node ProxySQL
+global_defs {
+  lvs_id proxy_HA
+}
+vrrp_script check_proxy {
+  script "killall -0 proxysql"   # health check: process còn sống không
+  interval 2
+  weight 2
+}
+vrrp_instance VI_01 {
+  state MASTER          # 1 node MASTER, còn lại BACKUP
+  interface eth0
+  virtual_router_id 51
+  priority 101            # node ưu tiên cao nhất giữ VIP khi mọi node đều sống
+  virtual_ipaddress {
+    192.168.0.88 dev eth0   # <-- VIP, application trỏ vào đây, không trỏ trực tiếp IP node
+  }
+  track_script { check_proxy }
+}</code></pre>
+  <p>Mỗi node đặt <code>priority</code> khác nhau (ví dụ 101/100/99). Node priority cao nhất còn sống giữ VIP. Khi nó chết, VRRP tự chuyển VIP sang node priority kế tiếp — theo benchmark thực tế, worst-case ~5s (phụ thuộc <code>interval</code> health check).</p>
+
+  <h2>Ba pattern kiến trúc, chọn theo nhu cầu</h2>
+  <table>
+    <thead><tr><th>Pattern</th><th>Mô tả</th><th>Khi dùng</th></tr></thead>
+    <tbody>
+      <tr><td>Tile (App + ProxySQL cùng host)</td><td>Mỗi app server có ProxySQL riêng, local</td><td>Giảm network hop tối đa, nhưng khó quản lý nếu có hàng trăm app server (mỗi ProxySQL đều tự ping MySQL → MySQL bị "khảo bài" quá nhiều)</td></tr>
+      <tr><td>Single VIP (active-passive)</td><td>N node ProxySQL, 1 VIP, chỉ 1 node nhận traffic lúc bất kỳ</td><td>Đơn giản nhất, đủ cho hầu hết trường hợp — chọn mặc định trừ khi có lý do cụ thể để phức tạp hơn</td></tr>
+      <tr><td>Multi-VIP (active-active)</td><td>Nhiều VIP, mỗi VIP ưu tiên node khác nhau — nhiều node cùng nhận traffic</td><td>Cần tận dụng hết capacity của mọi node ProxySQL, đổi lại cấu hình phức tạp hơn (tránh trùng IP)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Bảng tổng hợp toàn bộ stack HA (mission-critical)</h2>
+  <pre><code>Application
+   |
+   v  (kết nối vào VIP, không phải IP node cụ thể)
+[VIP quản lý bởi Keepalived]
+   |
+   v
+ProxySQL node 1 <--ProxySQL Cluster (sync config)--> ProxySQL node 2 <---> ProxySQL node 3
+   |                                |                                |
+   v                                v                                v
+        MySQL backend (Async / Group Replication / Galera — theo Reference 0002)</code></pre>
+
+  <p class="footer-note">
+    Nguồn: <a href="https://www.proxysql.com/documentation/proxysql-cluster/cluster-commands/">ProxySQL: Cluster Commands</a>,
+    <a href="https://dzone.com/articles/setting-up-proxysql-for-high-availability-no-singl">Marco Tusa (Percona): Setting Up ProxySQL for High Availability</a>.
+    Đầy đủ trong <a href="../RESOURCES.md">RESOURCES.md</a>.
+  </p>
+</main>
+</body>
+</html>

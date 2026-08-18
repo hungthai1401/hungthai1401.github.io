@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 11: Lab — ProxySQL + PostgreSQL streaming replication + failover</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0010-proxysql-cho-postgresql.html">Lesson 0010</a> ·
+    Lesson 0011 (lab) ·
+    <a href="../reference/0009-proxysql-postgresql-cheatsheet.html">Reference 0009</a>
+  </p>
+  <p class="kicker">Lesson 0011 · Lab thực hành</p>
+  <h1>Lab: ProxySQL + PostgreSQL streaming replication + failover thật</h1>
+  <p><em>~20 phút chạy tay. Lab này dựng đúng những gì Lesson 10 nói tới bằng code thật: 1 primary + 1 replica PostgreSQL streaming replication, ProxySQL route read/write, và một failover thật (promote replica, dừng primary) để xem pgsql_replication_hostgroups tự phản ứng ra sao. Tôi vừa chạy toàn bộ lab này thật, gặp 2 bug và đã sửa — số liệu dưới đây là kết quả thật.</em></p>
+
+  <h2>Kiến trúc lab</h2>
+  <p>Ở <code>lab/0010-postgresql-first-setup/</code>: 1 PostgreSQL primary + 1 replica (streaming replication qua <code>pg_basebackup -R</code>, chuẩn PG12+) + 1 ProxySQL (bản 3.0.10, thoả điều kiện ≥3.0.8 từ Lesson 10) + 1 container client có <code>psql</code>.</p>
+  <pre><code>cd lab/0010-postgresql-first-setup
+docker compose up -d
+sleep 25   # đợi primary init, replica basebackup, proxysql khởi động</code></pre>
+
+  <h2>Bug #1 tôi gặp: pg_hba.conf không tự cho phép replication connection</h2>
+  <p>Lần chạy đầu, container replica exit ngay với lỗi:</p>
+  <pre><code>pg_basebackup: error: connection to server at "postgres-primary" ... failed: FATAL:
+no pg_hba.conf entry for replication connection from host "...", user "replicator", no encryption</code></pre>
+  <p class="callout"><span class="callout-label">Nguyên nhân</span><code>POSTGRES_HOST_AUTH_METHOD=trust</code> chỉ sinh ra rule cho database thường (khoá <code>all</code>) — pseudo-database <code>replication</code> mà <code>pg_basebackup</code> dùng <strong>không tự động được bao gồm</strong>, cần dòng riêng. Đã sửa bằng cách thêm script <code>init-hba.sh</code> (chạy như init script của Postgres) để append <code>host replication replicator all trust</code> vào <code>pg_hba.conf</code>.</p>
+
+  <h2>Bug #2 tôi gặp: heredoc SQL không tới được psql</h2>
+  <p><code>setup.sh</code> lúc đầu chạy "thành công" (không lỗi) nhưng không bảng nào được tạo. Nguyên nhân: <code>docker exec</code> thiếu cờ <code>-i</code> nên không forward stdin — heredoc SQL "bay vào hư không", <code>psql</code> chạy với input trống, không báo lỗi gì. Đã sửa bằng cách thêm <code>-i</code> vào mọi lệnh <code>docker exec</code> cần nhận input qua stdin.</p>
+
+  <h2>Bước 1 — Xác nhận streaming replication hoạt động</h2>
+  <pre><code>docker exec lab10-postgres-replica psql -U postgres -tAc "SELECT pg_is_in_recovery();"   # kỳ vọng: t
+docker exec lab10-postgres-primary psql -U postgres -tAc "SELECT client_addr, state FROM pg_stat_replication;"</code></pre>
+  <p><strong>Kết quả thật:</strong> <code>pg_is_in_recovery()=t</code> trên replica, primary thấy <code>streaming</code> — replication đang chạy đúng.</p>
+
+  <h2>Bước 2 — Cấu hình ProxySQL (song song 4 bước Lesson 3/10)</h2>
+  <pre><code>./setup.sh</code></pre>
+  <p>Script chạy: thêm <code>pgsql_servers</code> (hostgroup 0=primary, 1=replica) → cấu hình monitor user → thêm <code>appuser</code> → thêm <code>pgsql_replication_hostgroups</code>. Kết quả cuối script:</p>
+  <pre><code> hostgroup_id |     hostname     | port | status | comment
+--------------+------------------+------+--------+---------
+ 0            | postgres-primary | 5432 | ONLINE | primary
+ 1            | postgres-replica | 5432 | ONLINE | replica</code></pre>
+  <p>Kiểm tra monitor thấy đúng vai trò từng node:</p>
+  <pre><code>-- monitor.pgsql_server_read_only_log
+postgres-replica | read_only=1
+postgres-primary | read_only=0</code></pre>
+
+  <h2>Bước 3 — Test read/write split thật</h2>
+  <pre><code>psql -h proxysql -p 6133 -U appuser -d appdb -c "INSERT INTO notes (body) VALUES ('hello from proxysql');"
+psql -h proxysql -p 6133 -U appuser -d appdb -tAc "SELECT inet_server_addr(), body FROM notes;"</code></pre>
+  <p><strong>Kết quả thật:</strong> write đi vào primary (không lỗi), read (đã thêm query rule <code>^SELECT → hostgroup 1</code>) trả về địa chỉ IP của <strong>replica</strong> — xác nhận qua so sánh với <code>client_addr</code> trong <code>pg_stat_replication</code>. Đúng như thiết kế của <code>pgsql_query_rules</code> ở Lesson 10.</p>
+
+  <h2>Bước 4 — Failover thật: dừng primary, promote replica</h2>
+  <pre><code>docker stop lab10-postgres-primary
+docker exec lab10-postgres-replica psql -U postgres -c "SELECT pg_promote();"</code></pre>
+  <p><strong>ProxySQL tự phản ứng thế nào — số liệu thật, poll <code>runtime_pgsql_servers</code> mỗi 2 giây:</strong></p>
+  <table>
+    <thead><tr><th>Thời điểm</th><th>hostgroup 0 (writer)</th><th>hostgroup 1 (reader)</th></tr></thead>
+    <tbody>
+      <tr><td>Trước failover</td><td>postgres-primary (ONLINE)</td><td>postgres-replica (ONLINE)</td></tr>
+      <tr><td>Ngay sau promote (~2-10s)</td><td>postgres-primary (ONLINE) <em>+</em> postgres-replica (ONLINE)</td><td>postgres-replica (ONLINE)</td></tr>
+      <tr><td>~12s sau (primary bị ping timeout 3 lần)</td><td>postgres-primary (<strong>SHUNNED</strong>) + postgres-replica (ONLINE)</td><td>postgres-replica (ONLINE)</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Điều đáng nhớ nhất của lab này</span>Ngay khi <code>pg_is_in_recovery()</code> trên <code>postgres-replica</code> chuyển từ true → false, ProxySQL <strong>tự thêm</strong> nó vào hostgroup 0 — nó không rời khỏi hostgroup 1, vì <code>pgsql-monitor_writer_is_also_reader=true</code> (default). Primary cũ không bị gỡ ngay — nó vẫn "ONLINE" cho tới khi monitor ping đủ số lần thất bại (<code>pgsql-monitor_ping_max_failures=3</code>) mới chuyển <code>SHUNNED</code>. Đây chính là độ trễ failover thật bạn cần biết khi tính SLA — không phải tức thời.</p>
+  <p>Write sau failover — không sửa gì ở phía app, vẫn cùng 1 câu lệnh — tự động đi vào node vừa promote:</p>
+  <pre><code>psql -h proxysql -p 6133 -U appuser -d appdb -c "INSERT INTO notes (body) VALUES ('written after failover');"
+-- INSERT 0 1 — thành công, xác nhận trực tiếp trên postgres-replica (giờ là primary) thấy đủ 2 dòng</code></pre>
+
+  <h2>Dọn lab</h2>
+  <pre><code>cd lab/0010-postgresql-first-setup
+docker compose down -v</code></pre>
+
+  <h2>So sánh với failover MySQL bạn đã học</h2>
+  <p>Về bản chất, đây là đúng bài học ở Lesson 4-5 (MySQL) áp dụng lại: proxy layer tự phát hiện role đổi qua monitor check (<code>read_only</code> ở MySQL, <code>pg_is_in_recovery()</code> ở PostgreSQL), và có độ trễ thật (không tức thời) trước khi route traffic đổi theo. Khác biệt: PostgreSQL không tự "bầu" primary mới như Galera/Group Replication — bạn (hoặc Patroni/repmgr) phải chủ động gọi <code>pg_promote()</code>; ProxySQL chỉ phản ứng theo, không tự quyết định ai là primary.</p>
+
+  <p class="footer-note">
+    Có bước nào trong 4 bước trên bạn muốn thử biến thể khác (ví dụ nhiều replica, hoặc tắt <code>pgsql-monitor_writer_is_also_reader</code> để xem writer không nhận traffic đọc), hỏi thêm tôi. Muốn đi tiếp: quay lại phần MySQL backend layer trên K8s còn treo từ Lesson 7, hay chủ đề khác trong mission?
+  </p>
+</main>
+</body>
+</html>

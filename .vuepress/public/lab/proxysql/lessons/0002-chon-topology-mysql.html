@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 2: Chọn topology MySQL trước khi cấu hình ProxySQL</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0001-proxysql-la-gi-va-vi-sao-can.html">Lesson 0001</a> ·
+    Lesson 0002 ·
+    <a href="../reference/0002-topology-decision-cheatsheet.html">Reference cheat sheet</a>
+  </p>
+  <p class="kicker">Lesson 0002</p>
+  <h1>Chọn topology MySQL trước khi cấu hình ProxySQL</h1>
+  <p><em>~12 phút đọc + quiz. Bạn chưa chốt topology cho hệ thống mission-critical đang thiết kế — bài này cho bạn khung quyết định, và cho thấy quyết định đó ảnh hưởng gì tới cách ProxySQL cấu hình.</em></p>
+
+  <h2>Vì sao phải quyết định trước khi đụng vào ProxySQL</h2>
+  <p>Ở Lesson 1 bạn đã biết ProxySQL nhóm backend vào <strong>hostgroups</strong> và tự theo dõi ai là writer, ai là reader. Nhưng "theo dõi bằng cách nào" phụ thuộc hoàn toàn vào topology MySQL bạn chọn — mỗi topology có cơ chế monitor khác nhau trong ProxySQL, dùng bảng config khác nhau. Chọn sai topology không có nghĩa ProxySQL không chạy được, nhưng nó có thể khiến bạn gặp đúng thất bại mà mission của bạn muốn tránh: split-brain, mất dữ liệu khi crash, hoặc failover không tự động.</p>
+
+  <h2>Bốn kiểu replication, một câu hỏi cốt lõi</h2>
+  <p>Câu hỏi cốt lõi của mọi topology: <strong>khi node ghi (writer) chết, bạn đánh đổi gì để có node mới lên thay?</strong></p>
+  <ul>
+    <li><strong>Async Replication</strong> — writer commit xong, xác nhận với client ngay, rồi mới stream dữ liệu sang replica ở background. Nhanh nhất, nhưng nếu writer chết trước khi stream xong, dữ liệu mới nhất mất luôn. Không có failover tự động — cần tool ngoài (orchestrator, MHA).</li>
+    <li><strong>Semisynchronous</strong> — writer chờ ít nhất 1 replica xác nhận đã nhận dữ liệu trước khi báo thành công. An toàn hơn, chậm hơn một chút, vẫn cần tool ngoài để failover.</li>
+    <li><strong>Galera/PXC (virtually synchronous)</strong> — mọi node active phải nhận và chấp nhận transaction trước khi commit. Zero data loss, multi-primary thật, có failover built-in. Đánh đổi: tốc độ ghi bị giới hạn bởi <strong>node chậm nhất</strong> trong cluster, và workload ghi trùng row nhiều có thể gây rollback/deadlock liên tục.</li>
+    <li><strong>Group Replication</strong> — dùng consensus protocol Paxos, thường chạy ở single-primary mode. Cũng zero data loss (khi đạt majority) và failover built-in, nhưng xử lý mạng chập chờn (đa AZ/vùng) tốt hơn Galera nhờ Paxos.</li>
+  </ul>
+
+  <div class="callout">
+    <span class="callout-label">Ví dụ thực tế (JusDB)</span>
+    Một sàn e-commerce dùng Galera bị split-brain 3 lần trong 2 tháng vì mạng giữa các availability zone có lúc trễ 50-100ms. Chuyển sang Group Replication (single-primary) thì hết split-brain — và latency ghi cross-AZ còn giảm, vì Paxos xử lý độ trễ mạng biến động tốt hơn cơ chế của Galera.
+  </div>
+
+  <h2>Khung quyết định nhanh</h2>
+  <table>
+    <thead><tr><th>Bối cảnh của bạn</th><th>Chọn</th></tr></thead>
+    <tbody>
+      <tr><td>1 datacenter, latency &lt;1ms, cần nhiều node nhận write đồng thời</td><td>Galera / PXC</td></tr>
+      <tr><td>Nhiều AZ hoặc vùng, mạng có lúc trễ/chập chờn</td><td>Group Replication (single-primary)</td></tr>
+      <tr><td>Chỉ cần scale đọc, chấp nhận lag, đã có tool failover riêng</td><td>Async Replication</td></tr>
+      <tr><td>Multi-datacenter thật (cách xa, WAN)</td><td>Hybrid: Galera/GR local + Async sang site DR</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Cảnh báo quorum</span>Nếu chọn Galera: dùng số node lẻ (3, 5...), hoặc thêm Galera Arbitrator (garbd) nếu số node chẵn. Thiếu quorum, network partition có thể khiến cả hai phía cluster tưởng mình là primary — đúng thứ một hệ thống mission-critical không thể chấp nhận.</p>
+
+  <h2>ProxySQL cấu hình khác nhau thế nào theo từng lựa chọn</h2>
+  <p>Đây là phần nối lại với Lesson 1. ProxySQL có 3 bảng monitor tương ứng 3 nhóm topology:</p>
+  <ul>
+    <li><code>mysql_replication_hostgroups</code> — cho Async/Semisync. Chỉ đọc cờ <code>read_only</code>: <code>0</code> là writer, <code>1</code> là reader. Đơn giản nhất.</li>
+    <li><code>mysql_group_replication_hostgroups</code> — cho Group Replication. Có 4 hostgroup: writer, backup_writer (khi có nhiều writer hơn <code>max_writers</code>), reader, offline (node không thuộc <em>primary partition</em> — chặn route vào node bị cô lập do split-brain).</li>
+    <li><code>mysql_galera_hostgroups</code> — cho Galera/PXC. <strong>Cấu trúc bảng giống hệt</strong> bảng Group Replication (cùng 4 hostgroup), nhưng tiêu chí monitor khác: kiểm tra thêm <code>wsrep_cluster_status</code>, <code>wsrep_local_state</code>, trạng thái DONOR khi đang SST (truyền dữ liệu ban đầu cho node mới).</li>
+  </ul>
+  <p>Điểm quan trọng: vì hai bảng Group Replication và Galera có cấu trúc gần như giống nhau, bạn <strong>không bị khoá chặt</strong> vào một cách viết query rule khác biệt hoàn toàn nếu đổi ý giữa hai topology này sau. Khác biệt chính nằm ở phía MySQL (Paxos vs wsrep), không phải ở cách bạn thiết kế hostgroup trong ProxySQL.</p>
+  <p>Chi tiết từng cột trong 2 bảng này đã có ở <a href="../reference/0002-topology-decision-cheatsheet.html">reference cheat sheet</a> — nên mở song song khi bạn thực sự cấu hình.</p>
+
+  <h2>Đọc thêm (nguồn chính)</h2>
+  <p><a href="https://mariadb.com/docs/server/ha-and-performance/standard-replication/choosing-a-replication-strategy">MariaDB: Choosing a Replication Strategy</a> cho phần so sánh topology, và hai trang tài liệu chính thức <a href="https://proxysql.com/documentation/group-replication-configuration/">ProxySQL: Group Replication Configuration</a> và <a href="https://proxysql.com/documentation/galera-configuration/">ProxySQL: Galera Configuration</a> cho phần cấu hình. Toàn bộ nguồn nằm trong <a href="../RESOURCES.md">RESOURCES.md</a>.</p>
+
+  <h2>Quiz — kiểm tra lại</h2>
+  <p class="quiz-score"></p>
+
+  <div class="quiz" data-correct="2">
+    <p class="quiz-question">1. Topology nào có tốc độ ghi bị giới hạn bởi chính node chậm nhất trong cluster, đổi lại zero data loss?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Async Replication</button></li>
+      <li><button class="quiz-option">Semisync Replication</button></li>
+      <li><button class="quiz-option">Galera Cluster</button></li>
+      <li><button class="quiz-option">Quorum Raft</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="1">
+    <p class="quiz-question">2. Trong ví dụ của JusDB, đổi từ Galera sang Group Replication giúp hết split-brain nhờ đặc điểm nào của Group Replication?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Dùng cơ chế wsrep bền hơn</button></li>
+      <li><button class="quiz-option">Dùng Paxos chịu được độ trễ mạng biến động</button></li>
+      <li><button class="quiz-option">Dùng thêm Galera arbitrator</button></li>
+      <li><button class="quiz-option">Dùng semisync ở tầng dưới</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">3. Bảng ProxySQL nào dùng chung cấu trúc 4 hostgroup (writer/backup_writer/reader/offline) cho cả Group Replication và Galera?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">mysql_group_replication_hostgroups và mysql_galera_hostgroups</button></li>
+      <li><button class="quiz-option">mysql_replication_hostgroups và mysql_users</button></li>
+      <li><button class="quiz-option">mysql_query_rules và mysql_servers</button></li>
+      <li><button class="quiz-option">mysql_servers và mysql_variables</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <div class="quiz" data-correct="0">
+    <p class="quiz-question">4. Nếu chọn Galera Cluster, điều gì cần làm để tránh mất quorum khi cluster có số node chẵn?</p>
+    <ul class="quiz-options">
+      <li><button class="quiz-option">Thêm một Galera Arbitrator (garbd)</button></li>
+      <li><button class="quiz-option">Thêm một ProxySQL Satellite node</button></li>
+      <li><button class="quiz-option">Thêm một MySQL Router instance</button></li>
+      <li><button class="quiz-option">Thêm một Keepalived VIP node</button></li>
+    </ul>
+    <p class="quiz-feedback"></p>
+  </div>
+
+  <p class="footer-note">
+    Có thắc mắc gì về decision matrix hay về node mission của bạn cụ thể, hỏi ngay droid — đây là quyết định lâu dài, đừng đoán. Lesson tiếp theo dự kiến: cài ProxySQL, cấu hình hostgroup + user + query rule đầu tiên cho topology bạn đã chọn.
+  </p>
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

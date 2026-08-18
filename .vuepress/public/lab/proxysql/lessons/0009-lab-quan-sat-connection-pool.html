@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Lesson 9: Lab — Quan sát ConnUsed/ConnFree theo traffic</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+  <p class="breadcrumb no-print">
+    <a href="../MISSION.md">Mission</a> ·
+    <a href="0008-connection-pooling-va-multiplexing.html">Lesson 0008</a> ·
+    Lesson 0009 (lab) ·
+    <a href="../reference/0008-connection-pooling-cheatsheet.html">Reference 0008</a>
+  </p>
+  <p class="kicker">Lesson 0009 · Lab thực hành</p>
+  <h1>Lab: quan sát ConnUsed/ConnFree biến động theo traffic</h1>
+  <p><em>~15 phút chạy tay. Lesson 8 giải thích multiplexing bằng lý thuyết — lab này tự tay tạo ra 2 kiểu traffic khác nhau và nhìn số liệu thật đổi theo. Số liệu dưới đây là kết quả tôi vừa chạy thật trên máy, không phải mô phỏng.</em></p>
+
+  <h2>Kiến trúc lab</h2>
+  <p>1 MySQL backend + 1 ProxySQL (backend <code>max_connections=50</code> — cố ý đặt thấp để dễ thấy saturation) + 1 container "client" dùng để bắn traffic và đọc stats. Toàn bộ nằm ở <code>lab/0009-connection-pool-observability/</code>.</p>
+  <pre><code>cd lab/0009-connection-pool-observability
+docker compose up -d
+# đợi ~15s cho MySQL init xong</code></pre>
+
+  <h2>Bước 1 — Baseline: pool đang trống</h2>
+  <pre><code>docker exec lab9-client mysql -h proxysql -P6032 -ustatsuser -pstatspass -e \
+  "SELECT hostgroup,srv_host,status,ConnUsed,ConnFree,ConnOK,ConnERR,Queries FROM stats_mysql_connection_pool;"</code></pre>
+  <p>Lúc mới khởi động: <code>ConnUsed=0, ConnFree=0, ConnOK=0, Queries=0</code> — chưa có connection nào được mở tới backend, đúng như "lazy" — ProxySQL chỉ mở backend connection khi có query thật cần.</p>
+
+  <h2>Bước 2 — Thí nghiệm A: nhiều frontend, có "think time" (mô phỏng app thật)</h2>
+  <p>Mở terminal 1 chạy <code>watch.sh</code> (tự lặp mỗi giây), terminal 2 chạy:</p>
+  <pre><code>./load-idle-app.sh 60 1 20   # 60 "session", mỗi session query rồi nghỉ 1s, trong 20s</code></pre>
+  <p><strong>Số liệu tôi quan sát được thật, lấy mẫu mỗi 5 giây:</strong></p>
+  <table>
+    <thead><tr><th>Thời điểm</th><th>ConnUsed</th><th>ConnFree</th><th>ConnOK</th><th>Queries</th></tr></thead>
+    <tbody>
+      <tr><td>+5s</td><td>0</td><td>3</td><td>3</td><td>256</td></tr>
+      <tr><td>+10s</td><td>0</td><td>4</td><td>4</td><td>552</td></tr>
+      <tr><td>+15s</td><td>0</td><td>5</td><td>5</td><td>850</td></tr>
+      <tr><td>+20s</td><td>0</td><td>5</td><td>5</td><td>1141</td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Đây là multiplexing thật, không phải lý thuyết</span>60 "frontend session" độc lập (mỗi lần gọi <code>mysql -e</code> là 1 connection TCP mới tới ProxySQL) tạo ra <strong>1141 query</strong> trong 20 giây — nhưng ProxySQL chỉ từng cần mở <strong>5 backend connection</strong> (<code>ConnOK=5</code>) suốt cả quá trình. Vì mỗi query chạy rất nhanh rồi trả connection lại pool ngay, 5 connection đó đủ xoay vòng phục vụ toàn bộ 60 session có "think time" giữa các query.</p>
+
+  <h2>Bước 3 — Thí nghiệm B: giữ transaction mở (tắt multiplexing)</h2>
+  <pre><code>./load-transactions.sh 20 4 2   # 20 session, mỗi session: BEGIN; SLEEP(4s); COMMIT — lặp 2 lần</code></pre>
+  <p><strong>Số liệu quan sát giữa lúc đang chạy (so với baseline ConnOK=5 ở bước trên):</strong></p>
+  <table>
+    <thead><tr><th></th><th>ConnUsed</th><th>ConnFree</th><th>ConnOK</th></tr></thead>
+    <tbody>
+      <tr><td>Trước khi chạy (baseline từ bước 2)</td><td>0</td><td>5</td><td>5</td></tr>
+      <tr><td>Đang chạy 20 session transaction</td><td><strong>20</strong></td><td><strong>0</strong></td><td><strong>20</strong></td></tr>
+    </tbody>
+  </table>
+  <p class="callout"><span class="callout-label">Đúng như Lesson 8 dự đoán</span>ConnUsed nhảy từ 0 lên <strong>đúng bằng 20</strong> — tức mỗi session transaction chiếm 1 backend connection riêng suốt thời gian transaction mở, không chia sẻ được. 5 connection cũ trong pool không đủ, ProxySQL phải mở thêm 15 connection mới (ConnOK: 5→20). Đây chính là "transaction đang mở tắt multiplexing" — không phải giả thuyết, là hành vi đo được.</p>
+
+  <h2>Bước 4 — Đẩy vượt max_connections để thấy saturation</h2>
+  <pre><code>./load-transactions.sh 80 4 1   # 80 session — vượt mysql_servers.max_connections=50</code></pre>
+  <p><strong>Số liệu quan sát:</strong></p>
+  <table>
+    <thead><tr><th></th><th>ConnUsed</th><th>ConnFree</th><th>ConnOK</th></tr></thead>
+    <tbody>
+      <tr><td>Đang chạy 80 session (cấu hình cap = 50)</td><td><strong>50</strong> (kẹp ở max_connections)</td><td>0</td><td>65</td></tr>
+      <tr><td>Sau khi load kết thúc</td><td>0</td><td>35</td><td>65 (không đổi — chỉ đếm connect mới)</td></tr>
+    </tbody>
+  </table>
+  <p>ConnUsed bị "kẹp" đúng ở 50 dù 80 session cùng đòi connection — đúng như <code>mysql_servers.max_connections</code> quy định. 30 session còn lại phải đợi tới khi có connection được trả lại pool. Đây chính là saturation Reference 0008 nói tới: khi ConnUsed chạm trần liên tục, đó là dấu hiệu cần tăng <code>max_connections</code> hoặc thêm backend — không phải lỗi.</p>
+
+  <h2>Dọn lab</h2>
+  <pre><code>cd lab/0009-connection-pool-observability
+docker compose down -v</code></pre>
+
+  <h2>Tổng kết điều bạn vừa tự tay thấy</h2>
+  <ul>
+    <li>Multiplexing không phải lý thuyết trừu tượng — <code>ConnOK</code> thấp trong khi <code>Queries</code> cao là bằng chứng trực tiếp, đo được, cho mọi hệ thống production của bạn sau này.</li>
+    <li>Chỉ cần thêm 1 lệnh <code>BEGIN</code> giữ mở là đủ để một session "nhảy" từ chia sẻ connection sang chiếm riêng — đây là điều cần nhớ khi review code app dùng transaction dài.</li>
+    <li><code>ConnUsed</code> kẹp ở đúng giá trị <code>max_connections</code> khi saturate — số liệu này là cách bạn phát hiện cần tăng capacity trước khi user report chậm.</li>
+  </ul>
+
+  <p class="footer-note">
+    Có gì trong 4 bước trên chưa khớp với dự đoán của bạn hoặc muốn thử biến thể khác (ví dụ tăng max_connections lên rồi lặp lại bước 4), hỏi thêm tôi. Muốn đi tiếp: quay lại chi tiết MySQL backend layer trên K8s, hay một chủ đề khác trong mission?
+  </p>
+</main>
+</body>
+</html>
