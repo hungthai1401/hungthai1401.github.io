@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 4: Bounded Context</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Bounded Context</h1>
+<p class="subtitle">Bài 4 · Domain-Driven Design cho dự án Laravel đặt lịch (booking)</p>
+
+<h2>Khởi động: nhớ lại bài 3</h2>
+
+<div class="quiz" id="warmup">
+  <div class="quiz-question">Vì sao invariant "không trùng khung giờ" không thể đặt trong <code>Booking::confirm()</code>, mà phải chuyển sang <code>RoomSchedule</code>?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì một Booking đơn lẻ không có tham chiếu tới các booking khác để so sánh</button></li>
+    <li><button class="quiz-option">Vì Laravel không cho phép gọi method static bên trong Entity</button></li>
+    <li><button class="quiz-option">Vì RoomSchedule chạy nhanh hơn Booking khi xử lý cùng logic</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<p>
+Nếu câu trên còn mơ hồ, quay lại <a href="0003-aggregate-and-invariant.html">Bài 3</a> trước khi tiếp tục.
+</p>
+
+<h2>Vấn đề ở tầm lớn hơn: "Booking" có phải luôn là một thứ?</h2>
+
+<p>
+Bài 3 giải quyết invariant trong nội bộ hệ thống đặt lịch. Nhưng hệ thống
+booking thật của bạn còn có Payment (thanh toán) và Notification (gửi
+thông báo). Câu hỏi tự nhiên: <code>Payment</code> có cần biết về
+<code>TimeSlot</code>, <code>RoomSchedule</code> không? Notification có cần
+biết cách tính "trùng giờ" không?
+</p>
+
+<p>
+Câu trả lời hầu như luôn là <strong>không</strong> - và đó chính là lý do
+DDD có khái niệm <strong>Bounded Context</strong>.
+</p>
+
+<h2>Bounded Context là gì?</h2>
+
+<p>
+Theo <a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank">Martin Fowler</a>,
+Bounded Context là một <strong>ranh giới</strong> (thường là một module, một
+service, hoặc một team) - trong đó một mô hình domain cụ thể, với ngôn ngữ
+cụ thể của nó, là đúng và nhất quán. <strong>Ngoài</strong> ranh giới đó, mô
+hình và ngôn ngữ ấy không còn áp dụng nữa.
+</p>
+
+<div class="callout">
+<div class="callout-title">Nhắc lại Ubiquitous Language (bài 1)</div>
+Ubiquitous Language không phải là một ngôn ngữ chung cho <em>toàn bộ</em> hệ
+thống - nó chỉ chung <em>trong một</em> Bounded Context. Từ "Booking" trong
+context Scheduling và từ "Booking" trong context Payment được phép có nghĩa
+khác nhau. Đó không phải là lỗi thiết kế - đó là điều DDD mong đợi.
+</div>
+
+<h2>Ba context của hệ thống booking</h2>
+
+<p>
+Hãy phác thảo (không cần chính xác 100% - đây là bước đầu):
+</p>
+
+<table>
+<tr><th>Context</th><th>Quan tâm điều gì</th><th>"Booking" nghĩa là gì ở đây?</th></tr>
+<tr>
+  <td><strong>Scheduling</strong></td>
+  <td>Phòng nào, giờ nào, có trùng không</td>
+  <td>Aggregate đầy đủ: <code>Booking</code> + <code>TimeSlot</code> + <code>RoomSchedule</code> (bài 2-3)</td>
+</tr>
+<tr>
+  <td><strong>Payment</strong></td>
+  <td>Số tiền, đã trả chưa, hoàn tiền</td>
+  <td>Chỉ là một <code>BookingReference</code> (ID + số tiền) - không biết gì về TimeSlot</td>
+</tr>
+<tr>
+  <td><strong>Notification</strong></td>
+  <td>Gửi email/SMS đúng người, đúng lúc</td>
+  <td>Chỉ là dữ liệu hiển thị: tên phòng, giờ, tên người đặt - không có hành vi nghiệp vụ</td>
+</tr>
+</table>
+
+<p>
+Trong <code>Payment</code>, một class tên <code>Booking</code> với đầy đủ
+logic "trùng giờ" là <strong>thừa và sai chỗ</strong> - Payment không cần,
+và không nên, biết cách tính overlap khung giờ. Nó chỉ cần biết "booking
+này id gì, số tiền bao nhiêu".
+</p>
+
+<pre><code><span class="code-comment">// Trong context Payment - "Booking" ở đây rất mỏng</span>
+<span class="code-keyword">final class</span> <span class="code-type">BookingReference</span>
+{
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">public readonly</span> BookingId $id,
+        <span class="code-keyword">public readonly</span> Money $amount,
+    ) {}
+}</code></pre>
+
+<div class="callout green">
+<div class="callout-title">Vì sao đây quan trọng cho dự án của bạn?</div>
+Nếu không tách context, bạn sẽ có xu hướng nhồi mọi thứ (TimeSlot, trạng
+thái thanh toán, nội dung email...) vào <em>một</em> class
+<code>Booking</code> khổng lồ - và class đó sẽ phình to, khó test, khó hiểu
+theo thời gian. Tách context giúp mỗi phần code chỉ cần hiểu đúng phần nó
+cần, không hơn.
+</div>
+
+<h2>Context giao tiếp với nhau thế nào?</h2>
+
+<p>
+Các context không sống độc lập hoàn toàn - <code>Scheduling</code> cần báo
+cho <code>Payment</code> biết "có một booking mới cần thu tiền". Cách phổ
+biến nhất: khi <code>RoomSchedule</code> xác nhận một booking, nó phát ra
+một sự kiện (domain event) như <code>BookingConfirmed</code>, chứa
+<code>BookingId</code> + số tiền - và <code>Payment</code> lắng nghe sự
+kiện đó, tạo <code>BookingReference</code> của riêng mình. Hai context
+không dùng chung một class <code>Booking</code>.
+</p>
+
+<p>
+Đây là chủ đề của <strong>Context Mapping</strong> - cách vẽ và quản lý
+quan hệ giữa các Bounded Context. Với 3 context nhỏ như trên, quan hệ đơn
+giản: Scheduling là nguồn phát sự kiện, Payment và Notification là nơi
+lắng nghe. Bài sau (cấu trúc thư mục Laravel) sẽ chỉ ra event này sống ở
+đâu trong code.
+</p>
+
+<h2>Kiểm tra nhanh</h2>
+
+<div class="quiz" id="quiz">
+
+  <div class="quiz-question">Câu 1. Context Payment có nên chứa logic tính "trùng khung giờ" không?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Không, vì Payment chỉ cần biết booking id và số tiền, không cần TimeSlot</button></li>
+    <li><button class="quiz-option">Có, vì mọi context phải dùng chung một class Booking duy nhất</button></li>
+    <li><button class="quiz-option">Có, nhưng chỉ khi số tiền thanh toán lớn hơn một ngưỡng nào đó</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+  <div class="quiz-question" style="margin-top: 1.8rem;">Câu 2. Vì sao từ "Booking" được phép có nghĩa khác nhau ở Scheduling và Payment?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì Ubiquitous Language chỉ nhất quán trong phạm vi một Bounded Context</button></li>
+    <li><button class="quiz-option">Vì đây là lỗi đặt tên cần được thống nhất lại giữa hai team</button></li>
+    <li><button class="quiz-option">Vì tiếng Anh "Booking" vốn có nhiều nghĩa khác nhau trong từ điển</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+</div>
+
+<h2>Nguồn nên đọc</h2>
+
+<div class="source-rec">
+<strong>Đọc chính (bắt buộc):</strong>
+<a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank">Martin Fowler - "BoundedContext"</a>
+- giải thích rõ vì sao không nên có một mô hình domain duy nhất cho toàn hệ thống. Khoảng 5-7 phút đọc.
+</div>
+
+<div class="source-rec">
+<strong>Thực hành (khi bắt tay vào dự án thật):</strong>
+<a href="https://github.com/ddd-crew/bounded-context-canvas" target="_blank">DDD Crew - Bounded Context Canvas</a>
+- template để vẽ ra từng context của hệ thống booking thật của bạn (trách nhiệm, ngôn ngữ, quan hệ với context khác).
+</div>
+
+<div class="lesson-footer">
+<p>
+<strong>Có gì chưa rõ?</strong> Câu hỏi hay để tự hỏi lúc này: "Notification
+có thực sự cần là một Bounded Context riêng, hay chỉ là một service nhỏ
+trong Scheduling?" - không có câu trả lời tuyệt đối đúng, hỏi mình để cùng
+phân tích trường hợp cụ thể của bạn.
+</p>
+<div class="nav-links">
+  <a href="0003-aggregate-and-invariant.html">&larr; Bài 3: Aggregate & Invariant</a>
+  <a href="0005-recommended-bounded-contexts.html">Bài 5: Đề xuất Bounded Context cho dự án của bạn &rarr;</a>
+</div>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const questions = quiz.querySelectorAll('.quiz-question');
+  questions.forEach((q) => {
+    const optionsList = q.nextElementSibling;
+    const feedback = optionsList.nextElementSibling;
+    const options = optionsList.querySelectorAll('.quiz-option');
+    options.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const isCorrect = btn.getAttribute('data-correct') === 'true';
+        options.forEach(b => {
+          b.disabled = true;
+          if (b.getAttribute('data-correct') === 'true') {
+            b.classList.add('correct');
+          } else if (b === btn) {
+            b.classList.add('wrong');
+          }
+        });
+        feedback.textContent = isCorrect
+          ? 'Đúng.'
+          : 'Chưa đúng - đáp án xanh là câu trả lời đúng. Đọc lại phần liên quan ở trên nếu cần.';
+        feedback.classList.add('show');
+      });
+    });
+  });
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 9: Domain Events</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Domain Events</h1>
+<p class="subtitle">Bài 9 · Domain-Driven Design cho dự án Laravel đặt lịch (booking) · Bài cuối chuỗi nền tảng</p>
+
+<h2>Khởi động: nhớ lại bài 4 & 8</h2>
+
+<div class="quiz" id="warmup">
+  <div class="quiz-question">Bài 4 nói Scheduling và Payment không nên dùng chung một class <code>Booking</code>. Vậy làm sao Payment biết được khi nào cần thu tiền?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Scheduling phát ra một sự kiện, Payment lắng nghe và tự xử lý theo cách của nó</button></li>
+    <li><button class="quiz-option">Payment định kỳ query trực tiếp vào bảng bookings của Scheduling</button></li>
+    <li><button class="quiz-option">Hai context phải luôn nằm trong cùng một Controller để chia sẻ dữ liệu</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<p>
+Bài 4-5 đã nhắc tới sự kiện <code>BookingConfirmed</code> như một khái
+niệm. Bài này biến nó thành code thật - hoàn thiện mảnh ghép cuối cùng của
+chuỗi bài nền tảng.
+</p>
+
+<h2>Domain Event là gì?</h2>
+
+<p>
+Theo <a href="https://martinfowler.com/eaaDev/DomainEvent.html" target="_blank">Martin Fowler</a>,
+một Domain Event là một object <strong>ghi lại điều gì đó đáng chú ý đã
+xảy ra</strong> trong domain - immutable, đặt tên ở <strong>thì quá khứ</strong>
+(<code>BookingConfirmed</code>, không phải <code>ConfirmBooking</code>),
+và chỉ chứa đủ dữ liệu để nơi khác phản ứng, không hơn.
+</p>
+
+<pre><code><span class="code-comment">// app/Domain/Scheduling/Events/BookingConfirmed.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">BookingConfirmed</span>
+{
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">public readonly</span> BookingId $bookingId,
+        <span class="code-keyword">public readonly</span> RoomId $roomId,
+        <span class="code-keyword">public readonly</span> DateTimeImmutable $occurredAt,
+    ) {}
+}</code></pre>
+
+<h2>Aggregate ghi lại sự kiện, không tự phát nó</h2>
+
+<p>
+<code>RoomSchedule</code> (bài 3, 7) <strong>ghi nhớ</strong> việc gì vừa
+xảy ra, nhưng không tự gọi Laravel event dispatcher - vẫn giữ Domain sạch
+khỏi framework (bài 6):
+</p>
+
+<pre><code><span class="code-keyword">final class</span> <span class="code-type">RoomSchedule</span>
+{
+    <span class="code-comment">/** @var Booking[] */</span>
+    <span class="code-keyword">private array</span> $bookings = [];
+
+    <span class="code-comment">/** @var object[] */</span>
+    <span class="code-keyword">private array</span> $recordedEvents = [];
+
+    <span class="code-comment">// ... reserve(), fromRows() như bài 7-8 ...</span>
+
+    <span class="code-keyword">public function</span> confirm(BookingId $bookingId): void
+    {
+        $booking = $this-&gt;findBooking($bookingId);
+        $booking-&gt;confirm();
+
+        $this-&gt;recordedEvents[] = <span class="code-keyword">new</span> BookingConfirmed(
+            $bookingId,
+            $this-&gt;roomId,
+            <span class="code-keyword">new</span> DateTimeImmutable(),
+        );
+    }
+
+    <span class="code-comment">/** @return object[] */</span>
+    <span class="code-keyword">public function</span> releaseEvents(): array
+    {
+        $events = $this-&gt;recordedEvents;
+        $this-&gt;recordedEvents = [];
+
+        <span class="code-keyword">return</span> $events;
+    }
+
+    <span class="code-keyword">private function</span> findBooking(BookingId $id): Booking
+    {
+        <span class="code-keyword">foreach</span> ($this-&gt;bookings <span class="code-keyword">as</span> $booking) {
+            <span class="code-keyword">if</span> ($booking-&gt;id()-&gt;value === $id-&gt;value) {
+                <span class="code-keyword">return</span> $booking;
+            }
+        }
+
+        <span class="code-keyword">throw new</span> \DomainException(<span class="code-string">'Booking không tồn tại trong RoomSchedule này'</span>);
+    }
+}</code></pre>
+
+<h2>Application layer: chỉ phát event sau khi save() thành công</h2>
+
+<p>
+Interface cho việc "phát" sự kiện cũng đặt ở Domain, giống Repository (bài 6),
+để Application layer không phụ thuộc trực tiếp vào Laravel Event facade:
+</p>
+
+<pre><code><span class="code-comment">// app/Domain/Scheduling/Events/DomainEventPublisher.php</span>
+<span class="code-keyword">interface</span> <span class="code-type">DomainEventPublisher</span>
+{
+    <span class="code-keyword">public function</span> publish(object $event): void;
+}
+
+<span class="code-comment">// app/Infrastructure/Scheduling/LaravelEventPublisher.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">LaravelEventPublisher</span> <span class="code-keyword">implements</span> DomainEventPublisher
+{
+    <span class="code-keyword">public function</span> publish(object $event): void
+    {
+        event($event); <span class="code-comment">// Laravel's Event::dispatch()</span>
+    }
+}</code></pre>
+
+<pre><code><span class="code-comment">// app/Domain/Scheduling/Actions/ConfirmBookingAction.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">ConfirmBookingAction</span>
+{
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private readonly</span> RoomScheduleRepository $repository,
+        <span class="code-keyword">private readonly</span> DomainEventPublisher $events,
+    ) {}
+
+    <span class="code-keyword">public function</span> execute(RoomId $roomId, BookingId $bookingId): void
+    {
+        $schedule = $this-&gt;repository-&gt;find($roomId);
+        $schedule-&gt;confirm($bookingId);
+        $this-&gt;repository-&gt;save($schedule); <span class="code-comment">// (1) lưu trước</span>
+
+        <span class="code-keyword">foreach</span> ($schedule-&gt;releaseEvents() <span class="code-keyword">as</span> $event) {
+            $this-&gt;events-&gt;publish($event); <span class="code-comment">// (2) phát event sau khi lưu thành công</span>
+        }
+    }
+}</code></pre>
+
+<div class="callout">
+<div class="callout-title">Vì sao phải lưu (1) rồi mới phát event (2), không phải ngược lại?</div>
+Nếu <code>save()</code> thất bại (lỗi DB, mất kết nối...) sau khi event đã
+phát, Payment/Notification đã "biết" một việc mà thật ra <strong>chưa hề
+xảy ra</strong> - Booking chưa được confirm trong DB. Luôn phát event
+<em>sau khi</em> thay đổi đã được lưu chắc chắn.
+</div>
+
+<h2>Payment lắng nghe - và tự xây model của riêng nó</h2>
+
+<pre><code><span class="code-comment">// app/Domain/Payment/Listeners/CreateInvoiceOnBookingConfirmed.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">CreateInvoiceOnBookingConfirmed</span>
+{
+    <span class="code-keyword">public function</span> handle(BookingConfirmed $event): void
+    {
+        <span class="code-comment">// Payment tự tạo Invoice của riêng nó, không tái sử dụng class Booking</span>
+        Invoice::createForBooking($event-&gt;bookingId, $event-&gt;occurredAt);
+    }
+}</code></pre>
+
+<p>
+Đăng ký trong <code>app/Providers/EventServiceProvider.php</code> như một
+listener Laravel thông thường. Đúng ý bài 4: <code>Invoice</code> chỉ cần
+<code>BookingId</code> + thời điểm - không cần biết <code>TimeSlot</code>
+hay logic "trùng giờ" tồn tại.
+</p>
+
+<h2>Kiểm tra nhanh</h2>
+
+<div class="quiz" id="quiz">
+
+  <div class="quiz-question">Câu 1. Vì sao phải phát <code>BookingConfirmed</code> sau khi <code>repository-&gt;save()</code> chạy xong, không phải ngay trong <code>RoomSchedule::confirm()</code>?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Để tránh Payment/Notification phản ứng với một thay đổi chưa chắc đã được lưu thành công</button></li>
+    <li><button class="quiz-option">Vì RoomSchedule không được phép có property kiểu array chứa event</button></li>
+    <li><button class="quiz-option">Vì Laravel chỉ cho phép dispatch event từ trong một Controller</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+  <div class="quiz-question" style="margin-top: 1.8rem;">Câu 2. Vì sao <code>CreateInvoiceOnBookingConfirmed</code> tự tạo <code>Invoice</code> riêng, không tái sử dụng class <code>Booking</code> của Scheduling?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì mỗi Bounded Context có model riêng - Payment chỉ cần dữ liệu tối thiểu từ event</button></li>
+    <li><button class="quiz-option">Vì class Booking được đánh dấu private nên không thể dùng ở namespace khác</button></li>
+    <li><button class="quiz-option">Vì BookingConfirmed event không được phép chứa BookingId theo quy tắc Laravel</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+</div>
+
+<h2>Nguồn nên đọc</h2>
+
+<div class="source-rec">
+<strong>Đọc chính (bắt buộc):</strong>
+<a href="https://martinfowler.com/eaaDev/DomainEvent.html" target="_blank">Martin Fowler - "Domain Event"</a>
+- định nghĩa gốc, ngắn gọn.
+</div>
+
+<div class="source-rec">
+<strong>Đọc thêm:</strong>
+<a href="https://martinfowler.com/articles/201701-event-driven.html" target="_blank">Martin Fowler - "What do you mean by Event-Driven?"</a>
+- phân biệt các kiểu dùng event khác nhau (notification vs event-carried state transfer) - hữu ích khi Payment/Notification cần nhiều dữ liệu hơn BookingId.
+</div>
+
+<div class="lesson-footer">
+<p>
+<strong>Đây là bài cuối của chuỗi nền tảng.</strong> Cả 5 mục tiêu trong
+<code>MISSION.md</code> giờ đã có lý thuyết + code mẫu tương ứng. Việc tiếp
+theo quan trọng nhất không phải đọc thêm - là <strong>copy code bài 7-9
+vào project thật, chạy test, và báo mình khi có kết quả hoặc vướng mắc</strong>.
+Hỏi mình bất cứ lúc nào trong quá trình đó.
+</p>
+<div class="nav-links">
+  <a href="0008-persist-with-eloquent.html">&larr; Bài 8: Persist qua Eloquent</a>
+  <a href="../reference/0001-ddd-laravel-cheatsheet.html">Reference: Tra cứu nhanh &rarr;</a>
+</div>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const questions = quiz.querySelectorAll('.quiz-question');
+  questions.forEach((q) => {
+    const optionsList = q.nextElementSibling;
+    const feedback = optionsList.nextElementSibling;
+    const options = optionsList.querySelectorAll('.quiz-option');
+    options.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const isCorrect = btn.getAttribute('data-correct') === 'true';
+        options.forEach(b => {
+          b.disabled = true;
+          if (b.getAttribute('data-correct') === 'true') {
+            b.classList.add('correct');
+          } else if (b === btn) {
+            b.classList.add('wrong');
+          }
+        });
+        feedback.textContent = isCorrect
+          ? 'Đúng.'
+          : 'Chưa đúng - đáp án xanh là câu trả lời đúng. Đọc lại phần liên quan ở trên nếu cần.';
+        feedback.classList.add('show');
+      });
+    });
+  });
+});
+</script>
+
+</body>
+</html>

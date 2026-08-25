@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 7: Thực hành - viết Scheduling context</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Thực hành: viết Scheduling context từ đầu</h1>
+<p class="subtitle">Bài 7 · Domain-Driven Design cho dự án Laravel đặt lịch (booking)</p>
+
+<p>
+Bài này khác các bài trước: không có quiz lý thuyết mới. Đây là
+<strong>checklist code thật</strong>, đúng cấu trúc bài 6, để bạn copy vào
+dự án Laravel của mình. Mục tiêu cuối bài: một Aggregate
+<code>RoomSchedule</code> chạy được, có test pass, <strong>không cần
+database, không cần boot Laravel</strong> - đúng success criterion đầu
+tiên trong <code>MISSION.md</code>.
+</p>
+
+<div class="callout">
+<div class="callout-title">Trước khi bắt đầu</div>
+Nếu dự án Laravel của bạn chưa tồn tại: <code>laravel new booking-app</code>
+rồi <code>cd booking-app</code>. Laravel 11+ mặc định dùng
+<a href="https://pestphp.com/" target="_blank">Pest</a> cho test - các ví dụ dưới dùng cú pháp Pest.
+</div>
+
+<h2>Bước 1 - Value Objects</h2>
+
+<p><code>app/Domain/Scheduling/ValueObjects/TimeSlot.php</code></p>
+<pre><code><span class="code-keyword">declare</span>(strict_types=1);
+
+<span class="code-keyword">namespace</span> App\Domain\Scheduling\ValueObjects;
+
+<span class="code-keyword">use</span> DateTimeImmutable;
+<span class="code-keyword">use</span> InvalidArgumentException;
+
+<span class="code-keyword">final class</span> <span class="code-type">TimeSlot</span>
+{
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">public readonly</span> DateTimeImmutable $start,
+        <span class="code-keyword">public readonly</span> DateTimeImmutable $end,
+    ) {
+        <span class="code-keyword">if</span> ($start &gt;= $end) {
+            <span class="code-keyword">throw new</span> InvalidArgumentException(
+                <span class="code-string">'Thời gian bắt đầu phải trước thời gian kết thúc'</span>
+            );
+        }
+    }
+
+    <span class="code-keyword">public function</span> overlaps(<span class="code-keyword">self</span> $other): bool
+    {
+        <span class="code-keyword">return</span> $this-&gt;start &lt; $other-&gt;end &amp;&amp; $other-&gt;start &lt; $this-&gt;end;
+    }
+
+    <span class="code-keyword">public function</span> equals(<span class="code-keyword">self</span> $other): bool
+    {
+        <span class="code-keyword">return</span> $this-&gt;start == $other-&gt;start &amp;&amp; $this-&gt;end == $other-&gt;end;
+    }
+}</code></pre>
+
+<p><code>app/Domain/Scheduling/ValueObjects/RoomId.php</code> và <code>BookingId.php</code> (cùng khuôn mẫu):</p>
+<pre><code><span class="code-keyword">final class</span> <span class="code-type">RoomId</span>
+{
+    <span class="code-keyword">private function</span> __construct(<span class="code-keyword">public readonly</span> string $value) {}
+
+    <span class="code-keyword">public static function</span> from(string $value): <span class="code-keyword">self</span>
+    {
+        <span class="code-keyword">return new</span> <span class="code-keyword">self</span>($value);
+    }
+
+    <span class="code-keyword">public function</span> equals(<span class="code-keyword">self</span> $other): bool
+    {
+        <span class="code-keyword">return</span> $this-&gt;value === $other-&gt;value;
+    }
+}
+
+<span class="code-keyword">final class</span> <span class="code-type">BookingId</span>
+{
+    <span class="code-keyword">private function</span> __construct(<span class="code-keyword">public readonly</span> string $value) {}
+
+    <span class="code-keyword">public static function</span> generate(): <span class="code-keyword">self</span>
+    {
+        <span class="code-keyword">return new</span> <span class="code-keyword">self</span>(bin2hex(random_bytes(16)));
+    }
+
+    <span class="code-keyword">public static function</span> from(string $value): <span class="code-keyword">self</span>
+    {
+        <span class="code-keyword">return new</span> <span class="code-keyword">self</span>($value);
+    }
+}</code></pre>
+
+<div class="callout green">
+<div class="callout-title">Chú ý</div>
+Không dùng <code>Illuminate\Support\Str::uuid()</code> ở đây - dù tiện,
+nó vẫn là import từ Laravel. Domain layer (bài 6) nên chỉ phụ thuộc PHP
+thuần. <code>random_bytes()</code> là hàm PHP core, không phải Laravel.
+</div>
+
+<h2>Bước 2 - Entity, Enum, Exception</h2>
+
+<p><code>app/Domain/Scheduling/Models/BookingStatus.php</code></p>
+<pre><code><span class="code-keyword">enum</span> <span class="code-type">BookingStatus</span>
+{
+    <span class="code-keyword">case</span> Held;
+    <span class="code-keyword">case</span> Confirmed;
+    <span class="code-keyword">case</span> Cancelled;
+}</code></pre>
+
+<p><code>app/Domain/Scheduling/Models/Booking.php</code></p>
+<pre><code><span class="code-keyword">final class</span> <span class="code-type">Booking</span>
+{
+    <span class="code-keyword">private</span> BookingStatus $status;
+
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private readonly</span> BookingId $id,
+        <span class="code-keyword">private readonly</span> TimeSlot $timeSlot,
+    ) {
+        $this-&gt;status = BookingStatus::Held;
+    }
+
+    <span class="code-keyword">public function</span> confirm(): void { $this-&gt;status = BookingStatus::Confirmed; }
+    <span class="code-keyword">public function</span> cancel(): void { $this-&gt;status = BookingStatus::Cancelled; }
+
+    <span class="code-keyword">public function</span> id(): BookingId { <span class="code-keyword">return</span> $this-&gt;id; }
+    <span class="code-keyword">public function</span> timeSlot(): TimeSlot { <span class="code-keyword">return</span> $this-&gt;timeSlot; }
+    <span class="code-keyword">public function</span> status(): BookingStatus { <span class="code-keyword">return</span> $this-&gt;status; }
+}</code></pre>
+
+<p><code>app/Domain/Scheduling/Exceptions/SlotAlreadyBooked.php</code></p>
+<pre><code><span class="code-keyword">final class</span> <span class="code-type">SlotAlreadyBooked</span> <span class="code-keyword">extends</span> \DomainException {}</code></pre>
+
+<h2>Bước 3 - Aggregate Root: <code>RoomSchedule</code></h2>
+
+<p><code>app/Domain/Scheduling/Models/RoomSchedule.php</code></p>
+<pre><code><span class="code-keyword">final class</span> <span class="code-type">RoomSchedule</span>
+{
+    <span class="code-comment">/** @var Booking[] */</span>
+    <span class="code-keyword">private array</span> $bookings = [];
+
+    <span class="code-keyword">private function</span> __construct(<span class="code-keyword">private readonly</span> RoomId $roomId) {}
+
+    <span class="code-keyword">public static function</span> empty(RoomId $roomId): <span class="code-keyword">self</span>
+    {
+        <span class="code-keyword">return new</span> <span class="code-keyword">self</span>($roomId);
+    }
+
+    <span class="code-keyword">public function</span> roomId(): RoomId { <span class="code-keyword">return</span> $this-&gt;roomId; }
+
+    <span class="code-comment">/** @return Booking[] */</span>
+    <span class="code-keyword">public function</span> bookings(): array { <span class="code-keyword">return</span> $this-&gt;bookings; }
+
+    <span class="code-keyword">public function</span> reserve(TimeSlot $slot): Booking
+    {
+        <span class="code-keyword">foreach</span> ($this-&gt;bookings <span class="code-keyword">as</span> $existing) {
+            <span class="code-keyword">if</span> ($existing-&gt;status() !== BookingStatus::Cancelled
+                &amp;&amp; $existing-&gt;timeSlot()-&gt;overlaps($slot)) {
+                <span class="code-keyword">throw new</span> SlotAlreadyBooked(
+                    <span class="code-string">'Khung giờ này đã có người đặt cho phòng này'</span>
+                );
+            }
+        }
+
+        $booking = <span class="code-keyword">new</span> Booking(BookingId::generate(), $slot);
+        $this-&gt;bookings[] = $booking;
+
+        <span class="code-keyword">return</span> $booking;
+    }
+}</code></pre>
+
+<div class="callout">
+<div class="callout-title">Đây chính là bài 3, viết thành code thật</div>
+Invariant "không trùng khung giờ" nằm hoàn toàn trong <code>reserve()</code>.
+Chú ý điều kiện bỏ qua booking đã <code>Cancelled</code> - một booking bị
+hủy không còn "chiếm" khung giờ nữa, cho phép người khác đặt lại đúng giờ
+đó.
+</div>
+
+<h2>Bước 4 - Test: chạy được không cần DB, không cần Laravel</h2>
+
+<p><code>tests/Unit/Domain/Scheduling/RoomScheduleTest.php</code></p>
+<pre><code><span class="code-keyword">use</span> App\Domain\Scheduling\Exceptions\SlotAlreadyBooked;
+<span class="code-keyword">use</span> App\Domain\Scheduling\Models\BookingStatus;
+<span class="code-keyword">use</span> App\Domain\Scheduling\Models\RoomSchedule;
+<span class="code-keyword">use</span> App\Domain\Scheduling\ValueObjects\RoomId;
+<span class="code-keyword">use</span> App\Domain\Scheduling\ValueObjects\TimeSlot;
+
+<span class="code-keyword">function</span> slot(string $start, string $end): TimeSlot
+{
+    <span class="code-keyword">return new</span> TimeSlot(<span class="code-keyword">new</span> DateTimeImmutable($start), <span class="code-keyword">new</span> DateTimeImmutable($end));
+}
+
+it(<span class="code-string">'cho phép đặt một khung giờ trống'</span>, <span class="code-keyword">function</span> () {
+    $schedule = RoomSchedule::empty(RoomId::from(<span class="code-string">'room-1'</span>));
+
+    $booking = $schedule-&gt;reserve(slot(<span class="code-string">'09:00'</span>, <span class="code-string">'10:00'</span>));
+
+    expect($booking-&gt;status())-&gt;toBe(BookingStatus::Held);
+    expect($schedule-&gt;bookings())-&gt;toHaveCount(1);
+});
+
+it(<span class="code-string">'không cho phép đặt trùng khung giờ'</span>, <span class="code-keyword">function</span> () {
+    $schedule = RoomSchedule::empty(RoomId::from(<span class="code-string">'room-1'</span>));
+    $schedule-&gt;reserve(slot(<span class="code-string">'09:00'</span>, <span class="code-string">'10:00'</span>));
+
+    expect(<span class="code-keyword">fn</span> () =&gt; $schedule-&gt;reserve(slot(<span class="code-string">'09:30'</span>, <span class="code-string">'10:30'</span>)))
+        -&gt;toThrow(SlotAlreadyBooked::class);
+});
+
+it(<span class="code-string">'cho phép đặt lại đúng giờ của một booking đã bị hủy'</span>, <span class="code-keyword">function</span> () {
+    $schedule = RoomSchedule::empty(RoomId::from(<span class="code-string">'room-1'</span>));
+    $first = $schedule-&gt;reserve(slot(<span class="code-string">'09:00'</span>, <span class="code-string">'10:00'</span>));
+    $first-&gt;cancel();
+
+    $second = $schedule-&gt;reserve(slot(<span class="code-string">'09:00'</span>, <span class="code-string">'10:00'</span>));
+
+    expect($second-&gt;status())-&gt;toBe(BookingStatus::Held);
+});</code></pre>
+
+<pre><code>./vendor/bin/pest tests/Unit/Domain/Scheduling/RoomScheduleTest.php</code></pre>
+
+<div class="callout green">
+<div class="callout-title">Vì sao test này chạy nhanh và không cần <code>RefreshDatabase</code>?</div>
+Không có Eloquent, không có <code>Illuminate\Foundation\Testing</code> nào
+được dùng. <code>RoomSchedule</code> là PHP thuần - test này chỉ là PHPUnit/Pest
+thực thi trực tiếp, không boot Laravel, không kết nối DB. Đây chính là lợi
+ích cụ thể của việc giữ Domain layer sạch (bài 6).
+</div>
+
+<h2>Bước 5 - Repository + Eloquent (khi cần persist)</h2>
+
+<p>
+Interface ở Domain (đã viết ở bài 6, <code>RoomScheduleRepository</code>)
+giữ nguyên. Phần Eloquent - migration, Model, và cách map qua lại - để bài
+sau khi bạn thật sự cần lưu dữ liệu (persist), tránh làm bài này quá dài.
+Cho tới lúc đó, <code>RoomSchedule</code> đã hoàn chỉnh và test được độc
+lập - đủ để bạn tự tin logic nghiệp vụ cốt lõi đúng, trước khi đụng vào
+database.
+</p>
+
+<h2>Checklist copy vào dự án của bạn</h2>
+
+<ol>
+<li><code>mkdir -p app/Domain/Scheduling/{Models,ValueObjects,Exceptions}</code></li>
+<li>Copy 6 file ở Bước 1-3 vào đúng namespace <code>App\Domain\Scheduling\...</code></li>
+<li>Copy file test ở Bước 4 vào <code>tests/Unit/Domain/Scheduling/</code></li>
+<li>Chạy <code>./vendor/bin/pest</code> - phải thấy 3 test pass, không cần config database</li>
+<li>Quay lại đây báo kết quả - nếu test đỏ, mình debug cùng bạn</li>
+</ol>
+
+<div class="lesson-footer">
+<p>
+<strong>Vướng ở đâu?</strong> Lỗi namespace, autoload PSR-4, hay Pest chưa
+cài (<code>composer require pestphp/pest --dev --with-all-dependencies</code>)
+đều là chuyện thường - báo mình lỗi cụ thể, đừng tự loay hoay quá lâu.
+</p>
+<div class="nav-links">
+  <a href="0006-laravel-folder-structure.html">&larr; Bài 6: Cấu trúc DDD trong Laravel</a>
+  <a href="0008-persist-with-eloquent.html">Bài 8: Persist RoomSchedule qua Eloquent &rarr;</a>
+</div>
+</div>
+
+</body>
+</html>

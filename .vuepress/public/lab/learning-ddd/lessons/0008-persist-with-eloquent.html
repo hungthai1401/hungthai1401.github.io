@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 8: Persist RoomSchedule qua Eloquent</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Persist RoomSchedule qua Eloquent</h1>
+<p class="subtitle">Bài 8 · Domain-Driven Design cho dự án Laravel đặt lịch (booking)</p>
+
+<h2>Khởi động: nhớ lại bài 7</h2>
+
+<div class="quiz" id="warmup">
+  <div class="quiz-question">Vì sao test cho <code>RoomSchedule</code> ở bài 7 chạy được mà không cần <code>RefreshDatabase</code> hay boot Laravel?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì RoomSchedule là PHP thuần, không dùng Eloquent hay bất kỳ class nào của Laravel</button></li>
+    <li><button class="quiz-option">Vì Pest tự động giả lập một database ảo trong bộ nhớ cho mọi test</button></li>
+    <li><button class="quiz-option">Vì RoomSchedule không có invariant nào cần kiểm tra thực sự</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<p>
+Bài 7 để lại việc persist cho bài này. Giờ là lúc nối
+<code>RoomSchedule</code> (Domain, PHP thuần) với database - qua Eloquent,
+đúng interface <code>RoomScheduleRepository</code> đã định nghĩa ở bài 6.
+</p>
+
+<h2>Một refinement nhỏ trước khi persist: tạo mới vs khôi phục</h2>
+
+<p>
+Ở bài 7, <code>Booking</code> luôn được tạo với <code>BookingId::generate()</code>
+và trạng thái <code>Held</code>. Nhưng khi <strong>đọc từ database</strong>,
+bạn cần dựng lại đúng <code>BookingId</code> đã lưu, và đúng trạng thái đã
+lưu (có thể là <code>Confirmed</code>, không phải luôn <code>Held</code>).
+Đây là hai việc khác nhau - DDD gọi việc thứ hai là
+<strong>reconstitution</strong> (khôi phục), phân biệt với
+<strong>creation</strong> (tạo mới).
+</p>
+
+<pre><code><span class="code-comment">// app/Domain/Scheduling/Models/BookingStatus.php - đổi thành backed enum</span>
+<span class="code-keyword">enum</span> <span class="code-type">BookingStatus</span>: string
+{
+    <span class="code-keyword">case</span> Held = <span class="code-string">'held'</span>;
+    <span class="code-keyword">case</span> Confirmed = <span class="code-string">'confirmed'</span>;
+    <span class="code-keyword">case</span> Cancelled = <span class="code-string">'cancelled'</span>;
+}</code></pre>
+
+<pre><code><span class="code-comment">// app/Domain/Scheduling/Models/Booking.php - thêm 2 named constructor</span>
+<span class="code-keyword">final class</span> <span class="code-type">Booking</span>
+{
+    <span class="code-keyword">private function</span> __construct(
+        <span class="code-keyword">private readonly</span> BookingId $id,
+        <span class="code-keyword">private readonly</span> TimeSlot $timeSlot,
+        <span class="code-keyword">private</span> BookingStatus $status,
+    ) {}
+
+    <span class="code-comment">// creation: dùng khi tạo booking mới</span>
+    <span class="code-keyword">public static function</span> hold(TimeSlot $timeSlot): <span class="code-keyword">self</span>
+    {
+        <span class="code-keyword">return new</span> <span class="code-keyword">self</span>(BookingId::generate(), $timeSlot, BookingStatus::Held);
+    }
+
+    <span class="code-comment">// reconstitution: dùng khi đọc từ database, giữ đúng id + status đã lưu</span>
+    <span class="code-keyword">public static function</span> reconstitute(BookingId $id, TimeSlot $timeSlot, BookingStatus $status): <span class="code-keyword">self</span>
+    {
+        <span class="code-keyword">return new</span> <span class="code-keyword">self</span>($id, $timeSlot, $status);
+    }
+
+    <span class="code-keyword">public function</span> confirm(): void { $this-&gt;status = BookingStatus::Confirmed; }
+    <span class="code-keyword">public function</span> cancel(): void { $this-&gt;status = BookingStatus::Cancelled; }
+    <span class="code-keyword">public function</span> id(): BookingId { <span class="code-keyword">return</span> $this-&gt;id; }
+    <span class="code-keyword">public function</span> timeSlot(): TimeSlot { <span class="code-keyword">return</span> $this-&gt;timeSlot; }
+    <span class="code-keyword">public function</span> status(): BookingStatus { <span class="code-keyword">return</span> $this-&gt;status; }
+}</code></pre>
+
+<p>
+Cập nhật <code>RoomSchedule::reserve()</code> ở bài 7 để gọi
+<code>Booking::hold()</code> thay vì <code>new Booking(...)</code>, và thêm
+factory <code>fromRows()</code>:
+</p>
+
+<pre><code><span class="code-comment">// app/Domain/Scheduling/Models/RoomSchedule.php</span>
+<span class="code-keyword">public function</span> reserve(TimeSlot $slot): Booking
+{
+    <span class="code-comment">// ... check overlap như bài 7 ...</span>
+    $booking = Booking::hold($slot); <span class="code-comment">// thay vì new Booking(...)</span>
+    $this-&gt;bookings[] = $booking;
+    <span class="code-keyword">return</span> $booking;
+}
+
+<span class="code-comment">/** @param array&lt;object{id:string,start_time:DateTimeImmutable,end_time:DateTimeImmutable,status:string}&gt; $rows */</span>
+<span class="code-keyword">public static function</span> fromRows(RoomId $roomId, iterable $rows): <span class="code-keyword">self</span>
+{
+    $schedule = <span class="code-keyword">new</span> <span class="code-keyword">self</span>($roomId);
+
+    <span class="code-keyword">foreach</span> ($rows <span class="code-keyword">as</span> $row) {
+        $schedule-&gt;bookings[] = Booking::reconstitute(
+            BookingId::from($row-&gt;id),
+            <span class="code-keyword">new</span> TimeSlot($row-&gt;start_time, $row-&gt;end_time),
+            BookingStatus::from($row-&gt;status),
+        );
+    }
+
+    <span class="code-keyword">return</span> $schedule;
+}</code></pre>
+
+<h2>Bước 1 - Migration</h2>
+
+<pre><code>Schema::create(<span class="code-string">'bookings'</span>, <span class="code-keyword">function</span> (Blueprint $table) {
+    $table-&gt;uuid(<span class="code-string">'id'</span>)-&gt;primary();
+    $table-&gt;string(<span class="code-string">'room_id'</span>)-&gt;index();
+    $table-&gt;dateTime(<span class="code-string">'start_time'</span>);
+    $table-&gt;dateTime(<span class="code-string">'end_time'</span>);
+    $table-&gt;string(<span class="code-string">'status'</span>);
+    $table-&gt;timestamps();
+});</code></pre>
+
+<h2>Bước 2 - Eloquent Model (chỉ để lưu trữ, không chứa logic)</h2>
+
+<pre><code><span class="code-comment">// app/Infrastructure/Scheduling/Eloquent/BookingModel.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">BookingModel</span> <span class="code-keyword">extends</span> Model
+{
+    <span class="code-keyword">protected</span> $table = <span class="code-string">'bookings'</span>;
+    <span class="code-keyword">protected</span> $keyType = <span class="code-string">'string'</span>;
+    <span class="code-keyword">public</span> $incrementing = <span class="code-keyword">false</span>;
+    <span class="code-keyword">protected</span> $fillable = [<span class="code-string">'id'</span>, <span class="code-string">'room_id'</span>, <span class="code-string">'start_time'</span>, <span class="code-string">'end_time'</span>, <span class="code-string">'status'</span>];
+    <span class="code-keyword">protected</span> $casts = [<span class="code-string">'start_time'</span> =&gt; <span class="code-string">'datetime'</span>, <span class="code-string">'end_time'</span> =&gt; <span class="code-string">'datetime'</span>];
+}</code></pre>
+
+<h2>Bước 3 - Repository implementation</h2>
+
+<pre><code><span class="code-comment">// app/Infrastructure/Scheduling/EloquentRoomScheduleRepository.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">EloquentRoomScheduleRepository</span> <span class="code-keyword">implements</span> RoomScheduleRepository
+{
+    <span class="code-keyword">public function</span> find(RoomId $roomId): RoomSchedule
+    {
+        $rows = BookingModel::where(<span class="code-string">'room_id'</span>, $roomId-&gt;value)-&gt;get()
+            -&gt;map(<span class="code-keyword">fn</span> (BookingModel $m) =&gt; (object) [
+                <span class="code-string">'id'</span> =&gt; $m-&gt;id,
+                <span class="code-string">'start_time'</span> =&gt; DateTimeImmutable::createFromInterface($m-&gt;start_time),
+                <span class="code-string">'end_time'</span> =&gt; DateTimeImmutable::createFromInterface($m-&gt;end_time),
+                <span class="code-string">'status'</span> =&gt; $m-&gt;status,
+            ]);
+
+        <span class="code-keyword">return</span> RoomSchedule::fromRows($roomId, $rows);
+    }
+
+    <span class="code-keyword">public function</span> save(RoomSchedule $schedule): void
+    {
+        <span class="code-keyword">foreach</span> ($schedule-&gt;bookings() <span class="code-keyword">as</span> $booking) {
+            BookingModel::updateOrCreate(
+                [<span class="code-string">'id'</span> =&gt; $booking-&gt;id()-&gt;value],
+                [
+                    <span class="code-string">'room_id'</span> =&gt; $schedule-&gt;roomId()-&gt;value,
+                    <span class="code-string">'start_time'</span> =&gt; $booking-&gt;timeSlot()-&gt;start,
+                    <span class="code-string">'end_time'</span> =&gt; $booking-&gt;timeSlot()-&gt;end,
+                    <span class="code-string">'status'</span> =&gt; $booking-&gt;status()-&gt;value,
+                ]
+            );
+        }
+    }
+}</code></pre>
+
+<div class="callout">
+<div class="callout-title">Gotcha đáng nhớ: Carbon vs DateTimeImmutable</div>
+Eloquent cast <code>'datetime'</code> trả về <code>Carbon</code>, không phải
+<code>DateTimeImmutable</code> mà <code>TimeSlot</code> (Domain, bài 2) yêu
+cầu. <code>DateTimeImmutable::createFromInterface()</code> chuyển đổi ở
+<strong>Infrastructure</strong> - Domain không cần biết Carbon tồn tại. Đây
+chính là "hướng phụ thuộc một chiều" của bài 6, áp dụng vào một chi tiết cụ
+thể.
+</div>
+
+<h2>Bước 4 - Đăng ký binding (để Laravel tự inject đúng implementation)</h2>
+
+<pre><code><span class="code-comment">// app/Providers/AppServiceProvider.php</span>
+<span class="code-keyword">public function</span> register(): void
+{
+    $this-&gt;app-&gt;bind(
+        RoomScheduleRepository::class,
+        EloquentRoomScheduleRepository::class,
+    );
+}</code></pre>
+
+<p>
+Từ đây, <code>ReserveRoomAction</code> (bài 6) nhận
+<code>RoomScheduleRepository</code> qua constructor mà không cần biết đó
+là Eloquent - Laravel service container tự inject
+<code>EloquentRoomScheduleRepository</code>.
+</p>
+
+<h2>Bước 5 - Feature test: kiểm tra end-to-end qua DB thật</h2>
+
+<pre><code><span class="code-keyword">use</span> Illuminate\Foundation\Testing\RefreshDatabase;
+
+uses(RefreshDatabase::class);
+
+it(<span class="code-string">'không cho phép đặt trùng giờ khi đi qua repository thật'</span>, <span class="code-keyword">function</span> () {
+    $repository = <span class="code-keyword">new</span> EloquentRoomScheduleRepository();
+    $roomId = RoomId::from(<span class="code-string">'room-1'</span>);
+
+    $schedule = $repository-&gt;find($roomId); <span class="code-comment">// rỗng lần đầu</span>
+    $schedule-&gt;reserve(slot(<span class="code-string">'09:00'</span>, <span class="code-string">'10:00'</span>));
+    $repository-&gt;save($schedule);
+
+    $reloaded = $repository-&gt;find($roomId);
+
+    expect(<span class="code-keyword">fn</span> () =&gt; $reloaded-&gt;reserve(slot(<span class="code-string">'09:30'</span>, <span class="code-string">'10:30'</span>)))
+        -&gt;toThrow(SlotAlreadyBooked::class);
+});</code></pre>
+
+<div class="callout green">
+<div class="callout-title">So sánh với bài 7</div>
+Test bài 7 (Unit, không DB) kiểm tra <em>logic nghiệp vụ</em> - nhanh, chạy
+hàng trăm lần/giây. Test này (Feature, có <code>RefreshDatabase</code>)
+kiểm tra <em>tích hợp thật</em> - đọc/ghi DB đúng, mapping đúng. Bạn cần cả
+hai loại, nhưng nên có <strong>nhiều</strong> test kiểu bài 7 và
+<strong>ít</strong> test kiểu này (chỉ để xác nhận phần nối dây, không lặp
+lại toàn bộ business logic).
+</div>
+
+<h2>Kiểm tra nhanh</h2>
+
+<div class="quiz" id="quiz">
+
+  <div class="quiz-question">Câu 1. Vì sao cần tách <code>Booking::hold()</code> (tạo mới) và <code>Booking::reconstitute()</code> (khôi phục), thay vì dùng một constructor duy nhất?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì tạo mới cần sinh ID/trạng thái Held, còn khôi phục cần giữ đúng ID/trạng thái đã lưu</button></li>
+    <li><button class="quiz-option">Vì PHP không cho phép constructor được gọi hai lần trên cùng một object</button></li>
+    <li><button class="quiz-option">Vì Pest yêu cầu mỗi Entity phải có ít nhất hai static method công khai</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+  <div class="quiz-question" style="margin-top: 1.8rem;">Câu 2. Vì sao việc chuyển Carbon sang DateTimeImmutable nên nằm ở Infrastructure, không phải Domain?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì Domain không nên biết Carbon (một class của Laravel) tồn tại, theo hướng phụ thuộc một chiều</button></li>
+    <li><button class="quiz-option">Vì Carbon chạy chậm hơn DateTimeImmutable nên phải xử lý sớm nhất có thể</button></li>
+    <li><button class="quiz-option">Vì TimeSlot không được phép có nhiều hơn một constructor argument kiểu date</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+</div>
+
+<div class="lesson-footer">
+<p>
+<strong>Vướng ở đâu?</strong> Lỗi thường gặp nhất: quên bind interface ở
+Bước 4 &rarr; Laravel báo lỗi "Target is not instantiable" khi resolve
+<code>RoomScheduleRepository</code>. Báo mình nếu gặp lỗi khác.
+</p>
+<div class="nav-links">
+  <a href="0007-scheduling-context-walkthrough.html">&larr; Bài 7: Viết Scheduling context</a>
+  <a href="0009-domain-events.html">Bài 9: Domain Events &rarr;</a>
+</div>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const questions = quiz.querySelectorAll('.quiz-question');
+  questions.forEach((q) => {
+    const optionsList = q.nextElementSibling;
+    const feedback = optionsList.nextElementSibling;
+    const options = optionsList.querySelectorAll('.quiz-option');
+    options.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const isCorrect = btn.getAttribute('data-correct') === 'true';
+        options.forEach(b => {
+          b.disabled = true;
+          if (b.getAttribute('data-correct') === 'true') {
+            b.classList.add('correct');
+          } else if (b === btn) {
+            b.classList.add('wrong');
+          }
+        });
+        feedback.textContent = isCorrect
+          ? 'Đúng.'
+          : 'Chưa đúng - đáp án xanh là câu trả lời đúng. Đọc lại phần liên quan ở trên nếu cần.';
+        feedback.classList.add('show');
+      });
+    });
+  });
+});
+</script>
+
+</body>
+</html>

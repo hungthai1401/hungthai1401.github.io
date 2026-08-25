@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 1: Vì sao cần DDD? & Ubiquitous Language</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Vì sao cần DDD? & Ubiquitous Language</h1>
+<p class="subtitle">Bài 1 · Domain-Driven Design cho dự án Laravel đặt lịch (booking)</p>
+
+<p>
+Bạn sắp viết một ứng dụng đặt lịch (booking) từ đầu bằng Laravel. Bạn đã vững OOP.
+Câu hỏi là: DDD giải quyết vấn đề gì mà OOP thông thường không tự giải quyết được?
+</p>
+
+<h2>Vấn đề: Anemic Domain Model</h2>
+
+<p>
+Hãy nhìn một Controller đặt lịch "kiểu Laravel thông thường":
+</p>
+
+<pre><code><span class="code-keyword">class</span> <span class="code-type">BookingController</span>
+{
+    <span class="code-keyword">public function</span> store(Request $request)
+    {
+        <span class="code-comment">// business rule: không được đặt trùng khung giờ</span>
+        $conflict = Booking::where(<span class="code-string">'room_id'</span>, $request-&gt;room_id)
+            -&gt;where(<span class="code-string">'start_time'</span>, <span class="code-string">'&lt;'</span>, $request-&gt;end_time)
+            -&gt;where(<span class="code-string">'end_time'</span>, <span class="code-string">'&gt;'</span>, $request-&gt;start_time)
+            -&gt;exists();
+
+        <span class="code-keyword">if</span> ($conflict) {
+            <span class="code-keyword">return</span> back()-&gt;withErrors(<span class="code-string">'Khung giờ đã có người đặt'</span>);
+        }
+
+        Booking::create($request-&gt;validated());
+    }
+}</code></pre>
+
+<p>
+Class <code>Booking</code> (Eloquent Model) ở đây chỉ là một cái túi chứa dữ liệu.
+Nó không biết, và không tự bảo vệ, quy tắc "không trùng khung giờ" - quy tắc đó
+nằm trơ trọi trong Controller. Đây gọi là <strong>Anemic Domain Model</strong>
+(mô hình domain "thiếu máu"): các đối tượng nghiệp vụ tồn tại, nhưng rỗng tuếch
+về hành vi, còn toàn bộ logic thì nằm rải rác ở Controller, Service, hay thậm
+chí ở Blade view.
+</p>
+
+<div class="callout">
+<div class="callout-title">Vì sao điều này là vấn đề?</div>
+Khi dự án lớn lên, quy tắc "không trùng khung giờ" có thể bị viết lại (sai)
+ở một Controller khác, một Job khác, một Console Command khác - vì nó không
+có một "nhà" duy nhất để sống. Bug nghiệp vụ (không phải bug kỹ thuật) sinh ra
+từ đó.
+</div>
+
+<h2>Ý tưởng cốt lõi của DDD</h2>
+
+<p>
+Domain-Driven Design, theo <a href="https://www.domainlanguage.com/ddd/blue-book/" target="_blank">Eric Evans</a>,
+đề xuất một cách nhìn ngược lại: thiết kế phần mềm bám sát mô hình của
+<em>domain</em> (lĩnh vực nghiệp vụ) - và để các đối tượng trong domain đó
+tự chịu trách nhiệm bảo vệ quy tắc của chính mình, thay vì để logic trôi
+dạt ra ngoài.
+</p>
+
+<p>
+Nhưng trước khi đi vào các building block cụ thể (Entity, Value Object,
+Aggregate...), có một ý tưởng nền tảng hơn cần nắm trước: <strong>Ubiquitous
+Language</strong> (ngôn ngữ chung/phổ quát).
+</p>
+
+<h2>Ubiquitous Language</h2>
+
+<p>
+Theo <a href="https://martinfowler.com/bliki/DomainDrivenDesign.html" target="_blank">Martin Fowler</a>,
+Ubiquitous Language là một ngôn ngữ được xây dựng có chủ đích, dùng
+<em>chung</em> giữa developer và chuyên gia nghiệp vụ (domain expert) - và
+được dùng <em>xuyên suốt</em>: trong hội thoại, trong tài liệu, và quan
+trọng nhất, <strong>ngay trong code</strong>.
+</p>
+
+<p>
+Ví dụ: nếu người quản lý phòng họp gọi việc "đặt lịch nhưng chưa xác nhận
+thanh toán" là <strong>"Giữ chỗ" (Hold)</strong>, còn "đã xác nhận" là
+<strong>"Đặt lịch" (Booking)</strong> - thì code của bạn nên có hai khái
+niệm riêng, <code>Hold</code> và <code>Booking</code>, chứ không nên gộp
+chung thành một <code>Booking</code> với cột <code>status</code> mơ hồ.
+Ngôn ngữ trong đầu domain expert phải khớp với tên class, tên method trong
+code.
+</p>
+
+<div class="callout green">
+<div class="callout-title">Vì sao điều này quan trọng cho dự án booking của bạn?</div>
+Nếu bạn ngồi với domain expert (chủ hệ thống booking) và họ dùng những từ
+như "Giữ chỗ", "Hủy chờ", "Overbooking" mà code của bạn không hề có khái
+niệm tương ứng - thì mọi lần dịch qua dịch lại giữa "lời nói" và "code" là
+một cơ hội để hiểu sai, và hiểu sai nghiệp vụ chính là nguồn bug đắt nhất.
+</div>
+
+<h2>Lộ trình phía trước</h2>
+
+<p>
+Đây là bài đầu tiên trong một chuỗi ngắn, mỗi bài xây trên bài trước, đều
+gắn với việc bạn xây Aggregate <code>Booking</code> thật:
+</p>
+
+<ol>
+<li>Vì sao cần DDD & Ubiquitous Language <em>(bài này)</em></li>
+<li>Entity vs Value Object - viết <code>Booking</code> (Entity) và <code>TimeSlot</code> (Value Object) đầu tiên</li>
+<li>Aggregate & Invariant - Booking tự bảo vệ quy tắc "không trùng khung giờ"</li>
+<li>Bounded Context - Scheduling, Availability, Payment có nên là một model hay không?</li>
+<li>Áp cấu trúc DDD vào thư mục Laravel (Domain / Application / Infrastructure)</li>
+</ol>
+
+<h2>Kiểm tra nhanh</h2>
+
+<div class="quiz" id="quiz">
+
+  <div class="quiz-question">Câu 1. Ubiquitous Language nghĩa là gì trong DDD?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Từ vựng nghiệp vụ mà developer và chuyên gia dùng chung</button></li>
+    <li><button class="quiz-option">Ngôn ngữ lập trình duy nhất được dùng trong toàn dự án</button></li>
+    <li><button class="quiz-option">Quy ước đặt tên biến, hàm áp dụng chung cho cả team code</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+  <div class="quiz-question" style="margin-top: 1.8rem;">Câu 2. Vì sao đặt logic "không trùng khung giờ" trong Controller ở ví dụ trên là dấu hiệu của Anemic Domain Model?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì Model Booking chỉ chứa dữ liệu, không tự bảo vệ được quy tắc nghiệp vụ của chính nó</button></li>
+    <li><button class="quiz-option">Vì Controller trong Laravel không được phép chứa bất kỳ dòng code logic nào cả</button></li>
+    <li><button class="quiz-option">Vì đặt logic ở Controller khiến ứng dụng chạy chậm hơn so với đặt ở Model</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+</div>
+
+<h2>Nguồn nên đọc</h2>
+
+<div class="source-rec">
+<strong>Đọc chính (bắt buộc):</strong>
+<a href="https://martinfowler.com/bliki/DomainDrivenDesign.html" target="_blank">Martin Fowler - "DomainDrivenDesign"</a>
+- bài viết ngắn, súc tích nhất để hiểu tổng quan DDD trước khi đi sâu vào từng khái niệm. Khoảng 5 phút đọc.
+</div>
+
+<div class="source-rec">
+<strong>Đọc thêm (khi có thời gian):</strong>
+<a href="https://spatie.be/courses/laravel-beyond-crud/domains" target="_blank">Spatie - "Domains" (Laravel Beyond CRUD, chương mở đầu)</a>
+- góc nhìn thực dụng, đúng ngữ cảnh Laravel, của team Spatie.
+</div>
+
+<div class="lesson-footer">
+<p>
+<strong>Có gì chưa rõ?</strong> Cứ hỏi mình (agent) trực tiếp - kể cả những câu
+nghe "ngu ngơ" như "Entity với Model Eloquent khác gì nhau?". Đó chính là
+việc của một người thầy.
+</p>
+<div class="nav-links">
+  <span>&larr; Đây là bài đầu tiên</span>
+  <a href="0002-entity-vs-value-object.html">Bài 2: Entity vs Value Object &rarr;</a>
+</div>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const questions = quiz.querySelectorAll('.quiz-question');
+  questions.forEach((q, qi) => {
+    const optionsList = q.nextElementSibling;
+    const feedback = optionsList.nextElementSibling;
+    const options = optionsList.querySelectorAll('.quiz-option');
+    options.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const isCorrect = btn.getAttribute('data-correct') === 'true';
+        options.forEach(b => {
+          b.disabled = true;
+          if (b.getAttribute('data-correct') === 'true') {
+            b.classList.add('correct');
+          } else if (b === btn) {
+            b.classList.add('wrong');
+          }
+        });
+        feedback.textContent = isCorrect
+          ? 'Đúng. Ubiquitous Language / Anemic Domain Model chính là gốc của mọi thứ sắp học.'
+          : 'Chưa đúng - đáp án xanh là câu trả lời đúng. Đọc lại phần "Ubiquitous Language" hoặc "Anemic Domain Model" ở trên nếu cần.';
+        feedback.classList.add('show');
+      });
+    });
+  });
+});
+</script>
+
+</body>
+</html>

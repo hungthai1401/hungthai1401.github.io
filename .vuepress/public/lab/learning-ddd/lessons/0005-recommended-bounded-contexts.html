@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 5: Đề xuất Bounded Context cho dự án booking của bạn</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Đề xuất Bounded Context cho dự án booking của bạn</h1>
+<p class="subtitle">Bài 5 · Domain-Driven Design cho dự án Laravel đặt lịch (booking)</p>
+
+<p>
+Bài 4 giới thiệu khái niệm Bounded Context bằng ví dụ chung. Bài này áp
+thẳng vào dự án thật của bạn: <strong>chưa có dòng code nào</strong>, mục
+tiêu bắt đầu code trong 2-4 tuần. Đây không phải chân lý tuyệt đối - là điểm
+khởi đầu hợp lý, bạn sẽ điều chỉnh khi hiểu nghiệp vụ rõ hơn.
+</p>
+
+<h2>Trước tiên: không phải mọi danh từ đều cần một Bounded Context</h2>
+
+<div class="callout">
+<div class="callout-title">Sai lầm phổ biến nhất khi mới học DDD</div>
+Người mới thường thấy 4 khái niệm nghiệp vụ (Scheduling, Availability,
+Payment, Notification) và lập tức tạo 4 Bounded Context, 4 module riêng
+biệt, ngay từ ngày đầu. Kết quả: quá nhiều ranh giới, quá nhiều chỗ để giao
+tiếp qua event, cho một dự án còn chưa biết nghiệp vụ thật sự phức tạp ở
+đâu. Đây chính là "over-engineering" nhắc ở đầu workspace này.
+</div>
+
+<h2>Bước 1: phân loại subdomain trước khi vẽ context</h2>
+
+<p>
+Trước khi quyết định ranh giới, hãy tự hỏi: <strong>phần nào của hệ thống
+này là lý do khách hàng chọn sản phẩm của bạn, thay vì một cái khác?</strong>
+Vaughn Vernon (trong <em>Domain-Driven Design Distilled</em>) gọi đó là
+<strong>Core Domain</strong> - nơi đáng đầu tư nhiều công sức DDD nhất.
+Phần còn lại chia làm hai loại: <strong>Supporting</strong> (hỗ trợ, đặc
+thù cho bạn nhưng không phải lợi thế cạnh tranh) và <strong>Generic</strong>
+(ai cũng cần, không có gì đặc biệt - nên dùng lại package có sẵn, không tự
+xây).
+</p>
+
+<table>
+<tr><th>Phần hệ thống</th><th>Loại subdomain</th><th>Vì sao</th></tr>
+<tr>
+  <td>Xếp lịch, kiểm tra trùng giờ, quản lý phòng/tài nguyên</td>
+  <td><strong>Core</strong></td>
+  <td>Đây chính là lý do sản phẩm "đặt lịch" của bạn tồn tại. Nếu tính đúng/trùng giờ sai, sản phẩm không còn giá trị.</td>
+</tr>
+<tr>
+  <td>Thanh toán</td>
+  <td><strong>Supporting/Generic</strong></td>
+  <td>Quan trọng, nhưng không phải thứ khách hàng chọn bạn vì cách bạn thu tiền. Nên dùng Stripe/VNPay SDK, không tự viết payment engine.</td>
+</tr>
+<tr>
+  <td>Gửi email/SMS thông báo</td>
+  <td><strong>Generic</strong></td>
+  <td>Không có gì đặc thù nghiệp vụ. Laravel Notifications (built-in) là đủ.</td>
+</tr>
+</table>
+
+<div class="callout green">
+<div class="callout-title">Hệ quả trực tiếp</div>
+Bạn nên dành <strong>gần hết</strong> công sức học DDD tactical (Entity,
+Value Object, Aggregate từ bài 2-3) cho phần <strong>Scheduling</strong>.
+Payment và Notification nên mỏng, thực dụng, dùng package có sẵn - đừng
+áp DDD nặng vào đó.
+</div>
+
+<h2>Bước 2: đề xuất Bounded Context cụ thể</h2>
+
+<table>
+<tr><th>Context</th><th>Trách nhiệm</th><th>Aggregate chính</th><th>Quan hệ</th></tr>
+<tr>
+  <td><strong>Scheduling</strong> <em>(Core)</em></td>
+  <td>Quản lý phòng/tài nguyên, khung giờ, đảm bảo không trùng lịch</td>
+  <td><code>RoomSchedule</code> (bài 3), <code>Booking</code> (bài 2)</td>
+  <td>Phát sự kiện <code>BookingConfirmed</code>, <code>BookingCancelled</code></td>
+</tr>
+<tr>
+  <td><strong>Payment</strong> <em>(Supporting)</em></td>
+  <td>Thu tiền, theo dõi trạng thái thanh toán</td>
+  <td><code>Invoice</code> (mỏng, xem bài 4)</td>
+  <td>Lắng nghe <code>BookingConfirmed</code>, gọi cổng thanh toán ngoài</td>
+</tr>
+<tr>
+  <td><strong>Notification</strong> <em>(Generic)</em></td>
+  <td>Gửi thông báo đúng người, đúng lúc</td>
+  <td>Không cần Aggregate riêng - dùng Laravel Notification class</td>
+  <td>Lắng nghe <code>BookingConfirmed</code>, <code>PaymentReceived</code></td>
+</tr>
+</table>
+
+<p>
+Chú ý: <strong>không có context "Availability" riêng</strong> ở giai đoạn
+này. "Tìm phòng còn trống" chỉ là một <em>câu query</em> đọc dữ liệu từ
+<code>RoomSchedule</code> trong context Scheduling - không phải một
+Bounded Context mới. Nếu sau này việc tìm kiếm trở nên phức tạp (cache
+riêng, search engine riêng, yêu cầu hiệu năng khác hẳn), bạn tách nó ra
+thành context riêng lúc đó - không phải bây giờ.
+</p>
+
+<h2>Bước 3: điều này ảnh hưởng gì đến 2-4 tuần tới của bạn?</h2>
+
+<ol>
+<li>Tuần 1-2: xây <strong>Scheduling</strong> trước - đây là nơi áp Entity/Value Object/Aggregate (bài 2-3) đầy đủ nhất.</li>
+<li>Payment: bắt đầu bằng một class <code>Invoice</code> đơn giản + gọi thẳng SDK cổng thanh toán, chưa cần domain model phức tạp.</li>
+<li>Notification: dùng thẳng Laravel Notification, không cần "học DDD" cho phần này.</li>
+<li>Chỉ tách context mới khi một phần thực sự phình to và có ngôn ngữ/nhịp thay đổi riêng - không tách trước.</li>
+</ol>
+
+<h2>Kiểm tra nhanh</h2>
+
+<div class="quiz" id="quiz">
+
+  <div class="quiz-question">Câu 1. Vì sao "Availability" (tìm phòng trống) chưa nên là một Bounded Context riêng ở giai đoạn này?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì nó chỉ là một câu query đọc dữ liệu có sẵn trong context Scheduling</button></li>
+    <li><button class="quiz-option">Vì Laravel không hỗ trợ tạo nhiều hơn ba Bounded Context trong một dự án</button></li>
+    <li><button class="quiz-option">Vì Availability luôn luôn phải nằm chung code với context Notification</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+  <div class="quiz-question" style="margin-top: 1.8rem;">Câu 2. Vì sao nên áp DDD tactical (Entity, VO, Aggregate) đầy đủ cho Scheduling, nhưng không cho Payment?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì Scheduling là Core Domain, còn Payment chỉ là Supporting - nên đầu tư khác mức</button></li>
+    <li><button class="quiz-option">Vì Payment trong Laravel không thể viết bằng các class PHP thông thường</button></li>
+    <li><button class="quiz-option">Vì Scheduling luôn có nhiều dòng code hơn Payment trong mọi dự án</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+</div>
+
+<h2>Nguồn nên đọc</h2>
+
+<div class="source-rec">
+<strong>Đọc chính (bắt buộc):</strong>
+Vaughn Vernon - Chương 1, <em>Domain-Driven Design Distilled</em> (đã có trong <code>RESOURCES.md</code>)
+- phần "Strategic Design" giải thích Core/Supporting/Generic Subdomain, chính là nền tảng cho bài này.
+</div>
+
+<div class="source-rec">
+<strong>Thực hành:</strong>
+<a href="https://github.com/ddd-crew/bounded-context-canvas" target="_blank">DDD Crew - Bounded Context Canvas</a>
+- điền canvas này cho từng context (Scheduling, Payment, Notification) khi bạn hiểu nghiệp vụ rõ hơn, để kiểm tra lại đề xuất ở đây.
+</div>
+
+<div class="lesson-footer">
+<p>
+<strong>Có gì chưa rõ, hoặc không đồng ý?</strong> Nếu bạn nghĩ nghiệp vụ
+booking của mình có phần nào khác - ví dụ có tính năng cạnh tranh đặc biệt
+ở Payment (không phải generic) - nói với mình, đề xuất ở trên sẽ được điều
+chỉnh lại và mình sẽ cập nhật <code>MISSION.md</code> nếu cần.
+</p>
+<div class="nav-links">
+  <a href="0004-bounded-context.html">&larr; Bài 4: Bounded Context</a>
+  <a href="0006-laravel-folder-structure.html">Bài 6: Cấu trúc DDD trong Laravel &rarr;</a>
+</div>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const questions = quiz.querySelectorAll('.quiz-question');
+  questions.forEach((q) => {
+    const optionsList = q.nextElementSibling;
+    const feedback = optionsList.nextElementSibling;
+    const options = optionsList.querySelectorAll('.quiz-option');
+    options.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const isCorrect = btn.getAttribute('data-correct') === 'true';
+        options.forEach(b => {
+          b.disabled = true;
+          if (b.getAttribute('data-correct') === 'true') {
+            b.classList.add('correct');
+          } else if (b === btn) {
+            b.classList.add('wrong');
+          }
+        });
+        feedback.textContent = isCorrect
+          ? 'Đúng.'
+          : 'Chưa đúng - đáp án xanh là câu trả lời đúng. Đọc lại phần liên quan ở trên nếu cần.';
+        feedback.classList.add('show');
+      });
+    });
+  });
+});
+</script>
+
+</body>
+</html>

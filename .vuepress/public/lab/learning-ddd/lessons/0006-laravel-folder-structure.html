@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 6: Cấu trúc DDD trong thư mục Laravel</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Cấu trúc DDD trong thư mục Laravel</h1>
+<p class="subtitle">Bài 6 · Domain-Driven Design cho dự án Laravel đặt lịch (booking)</p>
+
+<h2>Khởi động: nhớ lại bài 5</h2>
+
+<div class="quiz" id="warmup">
+  <div class="quiz-question">Vì sao Scheduling nên được áp DDD tactical (Entity, Value Object, Aggregate) đầy đủ, còn Notification thì không?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì Scheduling là Core Domain, Notification là Generic - nên đầu tư khác mức</button></li>
+    <li><button class="quiz-option">Vì Notification luôn được viết bởi một team khác không biết PHP</button></li>
+    <li><button class="quiz-option">Vì Laravel Notification không cho phép import namespace App\Domain</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<p>
+Bài này trả lời câu hỏi còn treo từ bài 2: <code>Booking</code>,
+<code>TimeSlot</code>, <code>RoomSchedule</code> (những class PHP thuần,
+không kế thừa Eloquent) sẽ <strong>sống ở đâu</strong> trong một dự án
+Laravel thật, và Eloquent Model đóng vai trò gì?
+</p>
+
+<h2>Ba tầng, một hướng phụ thuộc</h2>
+
+<p>
+Ý tưởng lấy từ <a href="https://spatie.be/courses/laravel-beyond-crud/domains" target="_blank">Brent Roose (Spatie) - "Laravel Beyond CRUD"</a>:
+tách code trong một Bounded Context thành 3 tầng. Quy tắc quan trọng nhất:
+<strong>mũi tên phụ thuộc chỉ đi một chiều</strong> - Infrastructure phụ
+thuộc Domain, Domain không bao giờ phụ thuộc Infrastructure hay Laravel.
+</p>
+
+<pre><code>Infrastructure  ──depends on──&gt;  Application  ──depends on──&gt;  Domain
+(Eloquent, HTTP,                 (Actions/UseCase,              (Entity, Value Object,
+ Controller, Job)                 điều phối)                     Aggregate - PHP thuần)</code></pre>
+
+<div class="callout">
+<div class="callout-title">Vì sao hướng này, không phải ngược lại?</div>
+Nếu <code>RoomSchedule</code> (Domain) import <code>Illuminate\Database\Eloquent\Model</code>,
+bạn không thể test invariant "không trùng giờ" mà không boot cả Laravel,
+cả database. Bài 2 đã cố tình viết <code>Booking</code>/<code>TimeSlot</code>
+không đụng Eloquent - đây chính là lý do.
+</div>
+
+<h2>Cấu trúc thư mục cho context Scheduling</h2>
+
+<pre><code>app/
+├── Domain/
+│   └── Scheduling/
+│       ├── Models/              <span class="code-comment">// Entity/Aggregate - PHP thuần, không Eloquent</span>
+│       │   ├── Booking.php              <span class="code-comment">// bài 2</span>
+│       │   └── RoomSchedule.php         <span class="code-comment">// bài 3</span>
+│       ├── ValueObjects/
+│       │   ├── TimeSlot.php             <span class="code-comment">// bài 2</span>
+│       │   ├── BookingId.php
+│       │   └── RoomId.php
+│       ├── Exceptions/
+│       │   └── SlotAlreadyBooked.php    <span class="code-comment">// bài 3</span>
+│       ├── Repositories/
+│       │   └── RoomScheduleRepository.php  <span class="code-comment">// interface - thuộc Domain</span>
+│       └── Actions/
+│           └── ReserveRoomAction.php    <span class="code-comment">// Application - điều phối</span>
+│
+├── Infrastructure/
+│   └── Scheduling/
+│       ├── Eloquent/
+│       │   ├── RoomScheduleModel.php    <span class="code-comment">// Eloquent Model - chỉ để lưu trữ</span>
+│       │   └── BookingModel.php
+│       └── EloquentRoomScheduleRepository.php  <span class="code-comment">// implement interface trên</span>
+│
+└── Http/Controllers/
+    └── BookingController.php            <span class="code-comment">// gọi Action, không chứa logic</span></code></pre>
+
+<h2>Repository: cầu nối giữa Domain và Eloquent</h2>
+
+<p>
+Domain định nghĩa <strong>interface</strong> mình cần (không quan tâm nó
+được lưu bằng MySQL, Postgres, hay in-memory). Infrastructure
+<strong>implement</strong> interface đó bằng Eloquent. Domain không biết gì
+về Eloquent - đây là <a href="https://martinfowler.com/eaaCatalog/repository.html" target="_blank">Repository pattern</a>
+áp dụng Dependency Inversion.
+</p>
+
+<pre><code><span class="code-comment">// app/Domain/Scheduling/Repositories/RoomScheduleRepository.php</span>
+<span class="code-keyword">interface</span> <span class="code-type">RoomScheduleRepository</span>
+{
+    <span class="code-keyword">public function</span> find(RoomId $roomId): RoomSchedule;
+
+    <span class="code-keyword">public function</span> save(RoomSchedule $schedule): void;
+}</code></pre>
+
+<pre><code><span class="code-comment">// app/Infrastructure/Scheduling/EloquentRoomScheduleRepository.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">EloquentRoomScheduleRepository</span> <span class="code-keyword">implements</span> RoomScheduleRepository
+{
+    <span class="code-keyword">public function</span> find(RoomId $roomId): RoomSchedule
+    {
+        $model = RoomScheduleModel::where(<span class="code-string">'room_id'</span>, $roomId-&gt;value)
+            -&gt;with(<span class="code-string">'bookings'</span>)-&gt;firstOrFail();
+
+        <span class="code-comment">// map dữ liệu Eloquent -&gt; đối tượng Domain thuần</span>
+        <span class="code-keyword">return</span> RoomSchedule::fromRows($roomId, $model-&gt;bookings);
+    }
+
+    <span class="code-keyword">public function</span> save(RoomSchedule $schedule): void
+    {
+        <span class="code-comment">// map đối tượng Domain -&gt; ngược lại Eloquent, rồi save()</span>
+    }
+}</code></pre>
+
+<h2>Application layer: Action điều phối, không chứa business rule</h2>
+
+<pre><code><span class="code-comment">// app/Domain/Scheduling/Actions/ReserveRoomAction.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">ReserveRoomAction</span>
+{
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private readonly</span> RoomScheduleRepository $repository,
+    ) {}
+
+    <span class="code-keyword">public function</span> execute(RoomId $roomId, TimeSlot $slot): BookingId
+    {
+        $schedule = $this-&gt;repository-&gt;find($roomId);
+
+        $bookingId = $schedule-&gt;reserve($slot); <span class="code-comment">// invariant nằm ở đây, bài 3</span>
+
+        $this-&gt;repository-&gt;save($schedule);
+
+        <span class="code-keyword">return</span> $bookingId;
+    }
+}</code></pre>
+
+<div class="callout green">
+<div class="callout-title">Điểm mấu chốt</div>
+<code>ReserveRoomAction</code> không tự kiểm tra "trùng giờ" - nó chỉ
+<em>gọi</em> <code>$schedule-&gt;reserve()</code>. Toàn bộ invariant vẫn nằm
+trong <code>RoomSchedule</code> (Domain), đúng như bài 3. Action chỉ lo
+"lấy dữ liệu ra, gọi domain, lưu lại" - đó gọi là <strong>Application
+layer</strong>: điều phối, không ra quyết định nghiệp vụ.
+</div>
+
+<p>
+Controller lúc này rất mỏng - không còn giống Controller ở bài 1:
+</p>
+
+<pre><code><span class="code-keyword">class</span> <span class="code-type">BookingController</span>
+{
+    <span class="code-keyword">public function</span> store(StoreBookingRequest $request, ReserveRoomAction $action)
+    {
+        $bookingId = $action-&gt;execute(
+            RoomId::from($request-&gt;room_id),
+            <span class="code-keyword">new</span> TimeSlot($request-&gt;start, $request-&gt;end),
+        );
+
+        <span class="code-keyword">return</span> back()-&gt;with(<span class="code-string">'booking_id'</span>, $bookingId-&gt;value);
+    }
+}</code></pre>
+
+<h2>Kiểm tra nhanh</h2>
+
+<div class="quiz" id="quiz">
+
+  <div class="quiz-question">Câu 1. Vì sao interface <code>RoomScheduleRepository</code> được đặt trong <code>Domain/</code>, còn class implement nó đặt trong <code>Infrastructure/</code>?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Để Domain định nghĩa nhu cầu, còn Infrastructure phụ thuộc vào Domain, không phải ngược lại</button></li>
+    <li><button class="quiz-option">Vì Laravel bắt buộc mọi interface phải nằm trong thư mục Domain theo convention</button></li>
+    <li><button class="quiz-option">Vì interface luôn chạy nhanh hơn class cụ thể khi đặt ở tầng Domain</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+  <div class="quiz-question" style="margin-top: 1.8rem;">Câu 2. <code>ReserveRoomAction</code> có nên tự viết code kiểm tra "trùng khung giờ" không?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Không, invariant đó thuộc về RoomSchedule ở tầng Domain, Action chỉ điều phối</button></li>
+    <li><button class="quiz-option">Có, vì Action là nơi duy nhất được phép chứa business rule trong Laravel</button></li>
+    <li><button class="quiz-option">Có, nhưng chỉ khi RoomScheduleRepository trả về nhiều hơn một RoomSchedule</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+</div>
+
+<h2>Nguồn nên đọc</h2>
+
+<div class="source-rec">
+<strong>Đọc chính (bắt buộc):</strong>
+<a href="https://spatie.be/courses/laravel-beyond-crud/domains" target="_blank">Brent Roose (Spatie) - "Domains", Laravel Beyond CRUD</a>
+- chương mở đầu, đúng ngữ cảnh Laravel, giải thích chi tiết cách tổ chức domain-oriented.
+</div>
+
+<div class="source-rec">
+<strong>Đọc thêm:</strong>
+<a href="https://martinfowler.com/eaaCatalog/repository.html" target="_blank">Martin Fowler - "Repository" (P of EAA catalog)</a>
+- định nghĩa gốc của Repository pattern, lý do tách khỏi tầng persistence.
+</div>
+
+<div class="lesson-footer">
+<p>
+<strong>Có gì chưa rõ?</strong> Câu hỏi thường gặp: "Vậy Eloquent Model
+<code>RoomScheduleModel</code> có field/relationship gì, map với
+<code>RoomSchedule</code> domain thế nào cho chuẩn?" - đây là bài thực hành
+tiếp theo khi bạn bắt tay viết code thật. Hỏi mình khi bạn tới bước đó.
+</p>
+<div class="nav-links">
+  <a href="0005-recommended-bounded-contexts.html">&larr; Bài 5: Đề xuất Bounded Context</a>
+  <a href="0007-scheduling-context-walkthrough.html">Bài 7: Thực hành viết code Scheduling context &rarr;</a>
+</div>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const questions = quiz.querySelectorAll('.quiz-question');
+  questions.forEach((q) => {
+    const optionsList = q.nextElementSibling;
+    const feedback = optionsList.nextElementSibling;
+    const options = optionsList.querySelectorAll('.quiz-option');
+    options.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const isCorrect = btn.getAttribute('data-correct') === 'true';
+        options.forEach(b => {
+          b.disabled = true;
+          if (b.getAttribute('data-correct') === 'true') {
+            b.classList.add('correct');
+          } else if (b === btn) {
+            b.classList.add('wrong');
+          }
+        });
+        feedback.textContent = isCorrect
+          ? 'Đúng.'
+          : 'Chưa đúng - đáp án xanh là câu trả lời đúng. Đọc lại phần liên quan ở trên nếu cần.';
+        feedback.classList.add('show');
+      });
+    });
+  });
+});
+</script>
+
+</body>
+</html>

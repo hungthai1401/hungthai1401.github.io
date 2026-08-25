@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 2: Entity vs Value Object</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Entity vs Value Object</h1>
+<p class="subtitle">Bài 2 · Domain-Driven Design cho dự án Laravel đặt lịch (booking)</p>
+
+<h2>Khởi động: nhớ lại bài 1</h2>
+
+<div class="quiz" id="warmup">
+  <div class="quiz-question">Ở bài trước, vì sao đặt rule "không trùng khung giờ" trong Controller lại là dấu hiệu của một vấn đề?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì Model không tự bảo vệ được quy tắc nghiệp vụ của chính nó</button></li>
+    <li><button class="quiz-option">Vì Controller trong Laravel chạy chậm hơn Model khi xử lý logic</button></li>
+    <li><button class="quiz-option">Vì Laravel không cho phép viết if/else bên trong Controller</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<p>
+Nếu câu trên còn mơ hồ, quay lại <a href="0001-why-ddd-ubiquitous-language.html">Bài 1</a> trước khi tiếp tục -
+mọi thứ dưới đây được xây trên nó.
+</p>
+
+<h2>Hai loại "đối tượng nghiệp vụ" trong DDD</h2>
+
+<p>
+DDD chia các khái niệm trong domain thành nhiều loại building block. Hai loại
+nền tảng nhất - thứ bạn sẽ dùng trong <em>mọi</em> bài sau - là
+<strong>Entity</strong> và <strong>Value Object</strong>.
+</p>
+
+<table>
+<tr><th></th><th>Entity</th><th>Value Object</th></tr>
+<tr><td>Được nhận diện bởi</td><td>Identity (một ID) - tồn tại xuyên suốt vòng đời</td><td>Chính giá trị các thuộc tính của nó</td></tr>
+<tr><td>Hai object bằng nhau khi</td><td>Cùng ID, dù thuộc tính khác nhau</td><td>Mọi thuộc tính giống nhau, dù là 2 instance khác nhau</td></tr>
+<tr><td>Có thể thay đổi (mutable)?</td><td>Có - trạng thái thay đổi qua thời gian</td><td>Không - immutable, thay đổi = tạo object mới</td></tr>
+<tr><td>Ví dụ trong booking</td><td><code>Booking</code> (có thể bị hủy, xác nhận...)</td><td><code>TimeSlot</code>, <code>Money</code>, <code>Email</code></td></tr>
+</table>
+
+<p>
+Theo <a href="https://martinfowler.com/bliki/ValueObject.html" target="_blank">Martin Fowler</a>,
+điểm mấu chốt để phân biệt không phải "nó có nhiều thuộc tính hay không", mà
+là: <strong>bạn có cần theo dõi nó qua thời gian như một cá thể riêng biệt
+không?</strong> Nếu có &rarr; Entity. Nếu nó chỉ mô tả một giá trị, và hai
+giá trị giống nhau thì luôn tương đương &rarr; Value Object.
+</p>
+
+<h2>Xây <code>TimeSlot</code> - Value Object đầu tiên</h2>
+
+<p>
+Hai <code>TimeSlot</code> cùng giờ bắt đầu/kết thúc luôn là "cùng một khung
+giờ", bất kể chúng là 2 instance PHP khác nhau. Không cần ID. Immutable -
+nếu muốn "khung giờ khác", tạo object mới:
+</p>
+
+<pre><code><span class="code-keyword">final class</span> <span class="code-type">TimeSlot</span>
+{
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private readonly</span> DateTimeImmutable $start,
+        <span class="code-keyword">private readonly</span> DateTimeImmutable $end,
+    ) {
+        <span class="code-keyword">if</span> ($start &gt;= $end) {
+            <span class="code-keyword">throw new</span> InvalidArgumentException(
+                <span class="code-string">'Thời gian bắt đầu phải trước thời gian kết thúc'</span>
+            );
+        }
+    }
+
+    <span class="code-keyword">public function</span> overlaps(TimeSlot $other): bool
+    {
+        <span class="code-keyword">return</span> $this-&gt;start &lt; $other-&gt;end
+            &amp;&amp; $other-&gt;start &lt; $this-&gt;end;
+    }
+
+    <span class="code-keyword">public function</span> equals(TimeSlot $other): bool
+    {
+        <span class="code-keyword">return</span> $this-&gt;start == $other-&gt;start
+            &amp;&amp; $this-&gt;end == $other-&gt;end;
+    }
+}</code></pre>
+
+<div class="callout">
+<div class="callout-title">Chú ý invariant trong constructor</div>
+Quy tắc "start phải trước end" không thể vi phạm được - nó nằm trong
+constructor. Không có cách nào tạo một <code>TimeSlot</code> "méo" trong hệ
+thống. Đây chính là ý tưởng "domain object tự bảo vệ chính mình" từ bài 1,
+áp dụng lần đầu vào code thật.
+</div>
+
+<h2>Xây <code>Booking</code> - Entity đầu tiên</h2>
+
+<p>
+<code>Booking</code> cần được theo dõi qua thời gian: nó có thể là "đang
+giữ chỗ", rồi "đã xác nhận", rồi "bị hủy" - vẫn là <em>cùng một</em> booking
+dù trạng thái đổi. Vì vậy nó cần một identity (<code>BookingId</code>), độc
+lập với giá trị các thuộc tính khác:
+</p>
+
+<pre><code><span class="code-keyword">enum</span> <span class="code-type">BookingStatus</span>
+{
+    <span class="code-keyword">case</span> Held;
+    <span class="code-keyword">case</span> Confirmed;
+    <span class="code-keyword">case</span> Cancelled;
+}
+
+<span class="code-keyword">final class</span> <span class="code-type">Booking</span>
+{
+    <span class="code-keyword">private</span> BookingStatus $status;
+
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private readonly</span> BookingId $id,
+        <span class="code-keyword">private readonly</span> TimeSlot $timeSlot,
+    ) {
+        $this-&gt;status = BookingStatus::Held;
+    }
+
+    <span class="code-keyword">public function</span> confirm(): void
+    {
+        $this-&gt;status = BookingStatus::Confirmed;
+    }
+
+    <span class="code-keyword">public function</span> id(): BookingId
+    {
+        <span class="code-keyword">return</span> $this-&gt;id;
+    }
+}</code></pre>
+
+<p>
+Hai <code>Booking</code> có cùng <code>TimeSlot</code> nhưng khác
+<code>BookingId</code> là <strong>hai booking khác nhau</strong> (ví dụ: một
+bị hủy rồi người khác đặt lại đúng giờ đó). Ngược lại, hai
+<code>TimeSlot</code> cùng giờ luôn là "cùng một khung giờ" - đó là khác
+biệt cốt lõi giữa Entity và Value Object.
+</p>
+
+<div class="callout green">
+<div class="callout-title">Vì sao chưa dùng Eloquent Model ở đây?</div>
+Cố tình chưa cho <code>Booking</code>/<code>TimeSlot</code> kế thừa
+<code>Model</code>. Đây là các <em>domain object</em> thuần PHP - test được
+mà không cần database, không cần boot Laravel. Bài sau (cấu trúc thư mục)
+sẽ chỉ ra <code>Booking</code> này sống ở đâu, và Eloquent Model đóng vai
+trò persist nó ra sao.
+</div>
+
+<h2>Kiểm tra nhanh</h2>
+
+<div class="quiz" id="quiz">
+
+  <div class="quiz-question">Câu 1. Hai instance <code>TimeSlot</code> khác nhau trong PHP nhưng có cùng start/end. Theo DDD, chúng có bằng nhau không?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Có, vì Value Object bằng nhau khi thuộc tính giống nhau</button></li>
+    <li><button class="quiz-option">Không, vì mỗi instance PHP luôn có identity riêng biệt</button></li>
+    <li><button class="quiz-option">Chỉ bằng nhau nếu được lưu chung một dòng trong database</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+  <div class="quiz-question" style="margin-top: 1.8rem;">Câu 2. Vì sao <code>Booking</code> cần <code>BookingId</code>, còn <code>TimeSlot</code> thì không cần ID riêng?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì Booking là Entity cần theo dõi qua thời gian, TimeSlot chỉ mô tả một giá trị</button></li>
+    <li><button class="quiz-option">Vì Eloquent yêu cầu mọi Model bắt buộc phải có cột id trong bảng</button></li>
+    <li><button class="quiz-option">Vì TimeSlot không bao giờ được phép lưu vào cơ sở dữ liệu nào cả</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+</div>
+
+<h2>Nguồn nên đọc</h2>
+
+<div class="source-rec">
+<strong>Đọc chính (bắt buộc):</strong>
+<a href="https://martinfowler.com/bliki/ValueObject.html" target="_blank">Martin Fowler - "ValueObject"</a>
+- ngắn, đi thẳng vào lý do vì sao Value Object nên immutable và so sánh bằng giá trị. Khoảng 3-4 phút đọc.
+</div>
+
+<div class="source-rec">
+<strong>Đọc thêm (khi có thời gian):</strong>
+<a href="https://www.oreilly.com/library/view/domain-driven-design-distilled/9780134434964/" target="_blank">Vaughn Vernon - Chương 2, "Domain-Driven Design Distilled"</a>
+- giải thích Entity/Value Object cùng với các building block khác trong một bức tranh tổng thể.
+</div>
+
+<div class="lesson-footer">
+<p>
+<strong>Có gì chưa rõ?</strong> Câu hỏi kiểu "Tại sao không dùng Eloquent Model
+làm luôn Entity cho gọn?" là câu rất đáng hỏi - hỏi mình ngay, đừng để nó
+trôi qua.
+</p>
+<div class="nav-links">
+  <a href="0001-why-ddd-ubiquitous-language.html">&larr; Bài 1: Vì sao cần DDD?</a>
+  <a href="0003-aggregate-and-invariant.html">Bài 3: Aggregate & Invariant &rarr;</a>
+</div>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const questions = quiz.querySelectorAll('.quiz-question');
+  questions.forEach((q) => {
+    const optionsList = q.nextElementSibling;
+    const feedback = optionsList.nextElementSibling;
+    const options = optionsList.querySelectorAll('.quiz-option');
+    options.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const isCorrect = btn.getAttribute('data-correct') === 'true';
+        options.forEach(b => {
+          b.disabled = true;
+          if (b.getAttribute('data-correct') === 'true') {
+            b.classList.add('correct');
+          } else if (b === btn) {
+            b.classList.add('wrong');
+          }
+        });
+        feedback.textContent = isCorrect
+          ? 'Đúng.'
+          : 'Chưa đúng - đáp án xanh là câu trả lời đúng. Đọc lại phần liên quan ở trên nếu cần.';
+        feedback.classList.add('show');
+      });
+    });
+  });
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tra cứu nhanh: DDD cho Laravel booking</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Tra cứu nhanh: DDD cho Laravel booking</h1>
+<p class="subtitle">Reference · Tổng hợp từ bài 1-6 · In ra hoặc để mở khi code</p>
+
+<h2>Building blocks tactical</h2>
+
+<table>
+<tr><th>Khái niệm</th><th>Định nghĩa ngắn</th><th>Ví dụ trong dự án booking</th></tr>
+<tr>
+  <td><strong>Entity</strong></td>
+  <td>Nhận diện bởi identity (ID), theo dõi qua thời gian, mutable</td>
+  <td><code>Booking</code> (bài 2)</td>
+</tr>
+<tr>
+  <td><strong>Value Object</strong></td>
+  <td>Nhận diện bởi giá trị thuộc tính, immutable, không có ID</td>
+  <td><code>TimeSlot</code>, <code>BookingId</code>, <code>RoomId</code> (bài 2)</td>
+</tr>
+<tr>
+  <td><strong>Invariant</strong></td>
+  <td>Quy tắc nghiệp vụ phải luôn đúng, được bảo vệ ngay trong constructor/method của domain object</td>
+  <td>"start phải trước end" trong <code>TimeSlot</code>; "không trùng giờ" trong <code>RoomSchedule</code> (bài 2-3)</td>
+</tr>
+<tr>
+  <td><strong>Aggregate</strong></td>
+  <td>Cụm Entity + Value Object, có một Aggregate Root, là ranh giới nhất quán giao dịch (invariant trong ranh giới này luôn đúng ngay sau transaction)</td>
+  <td><code>RoomSchedule</code> (bài 3)</td>
+</tr>
+<tr>
+  <td><strong>Repository</strong></td>
+  <td>Interface (định nghĩa ở Domain) để load/save một Aggregate, không quan tâm cơ chế lưu trữ</td>
+  <td><code>RoomScheduleRepository</code> (bài 6)</td>
+</tr>
+<tr>
+  <td><strong>Reconstitution vs Creation</strong></td>
+  <td>Tạo mới (sinh ID mới) khác với khôi phục từ DB (giữ đúng ID/trạng thái đã lưu) - nên có 2 named constructor riêng</td>
+  <td><code>Booking::hold()</code> vs <code>Booking::reconstitute()</code> (bài 8)</td>
+</tr>
+<tr>
+  <td><strong>Domain Event</strong></td>
+  <td>Object ghi lại điều gì đã xảy ra trong domain, immutable, tên ở thì quá khứ - Aggregate ghi nhận, Application layer phát đi sau khi save() thành công</td>
+  <td><code>BookingConfirmed</code> (bài 9)</td>
+</tr>
+</table>
+
+<h2>Building blocks strategic</h2>
+
+<table>
+<tr><th>Khái niệm</th><th>Định nghĩa ngắn</th><th>Ví dụ trong dự án booking</th></tr>
+<tr>
+  <td><strong>Ubiquitous Language</strong></td>
+  <td>Ngôn ngữ chung giữa dev và domain expert, dùng xuyên suốt cả trong code - nhưng chỉ nhất quán <em>trong một</em> Bounded Context</td>
+  <td>"Booking" nghĩa khác nhau ở Scheduling vs Payment (bài 4)</td>
+</tr>
+<tr>
+  <td><strong>Bounded Context</strong></td>
+  <td>Ranh giới trong đó một mô hình domain cụ thể là đúng và nhất quán</td>
+  <td>Scheduling, Payment, Notification (bài 4-5)</td>
+</tr>
+<tr>
+  <td><strong>Core Domain</strong></td>
+  <td>Phần hệ thống là lý do khách hàng chọn sản phẩm - đầu tư DDD tactical đầy đủ</td>
+  <td>Scheduling (bài 5)</td>
+</tr>
+<tr>
+  <td><strong>Supporting Subdomain</strong></td>
+  <td>Cần thiết, đặc thù cho bạn, nhưng không phải lợi thế cạnh tranh - model mỏng, có thể dùng SDK/package</td>
+  <td>Payment (bài 5)</td>
+</tr>
+<tr>
+  <td><strong>Generic Subdomain</strong></td>
+  <td>Ai cũng cần, không đặc thù - dùng lại package có sẵn, không tự xây</td>
+  <td>Notification (bài 5)</td>
+</tr>
+</table>
+
+<h2>Cấu trúc thư mục Laravel (context Scheduling)</h2>
+
+<pre><code>app/
+├── Domain/Scheduling/
+│   ├── Models/              <span class="code-comment">// Entity - PHP thuần</span>
+│   ├── ValueObjects/         <span class="code-comment">// Value Object - PHP thuần</span>
+│   ├── Exceptions/
+│   ├── Repositories/         <span class="code-comment">// interface</span>
+│   └── Actions/              <span class="code-comment">// Application layer - điều phối</span>
+├── Infrastructure/Scheduling/
+│   ├── Eloquent/             <span class="code-comment">// Eloquent Model - chỉ lưu trữ</span>
+│   └── Eloquent...Repository.php  <span class="code-comment">// implement interface ở Domain</span>
+└── Http/Controllers/         <span class="code-comment">// mỏng - chỉ gọi Action</span></code></pre>
+
+<p class="diagram-caption">
+Quy tắc phụ thuộc: Infrastructure &rarr; Application &rarr; Domain. Domain không bao giờ import Eloquent/Laravel. (bài 6)
+</p>
+
+<h2>Đề xuất Bounded Context cho dự án booking</h2>
+
+<table>
+<tr><th>Context</th><th>Loại</th><th>Đầu tư</th></tr>
+<tr><td>Scheduling</td><td>Core</td><td>Full DDD tactical (Entity/VO/Aggregate/Repository)</td></tr>
+<tr><td>Payment</td><td>Supporting</td><td>Model mỏng + SDK cổng thanh toán ngoài</td></tr>
+<tr><td>Notification</td><td>Generic</td><td>Laravel Notification có sẵn, không cần domain model</td></tr>
+</table>
+<p>
+"Availability" (tìm phòng trống) chưa tách context riêng - là query đọc từ Scheduling (bài 5).
+</p>
+
+<h2>Nguồn gốc</h2>
+<ul>
+<li><a href="https://martinfowler.com/bliki/DomainDrivenDesign.html" target="_blank">Martin Fowler - DomainDrivenDesign</a></li>
+<li><a href="https://martinfowler.com/bliki/ValueObject.html" target="_blank">Martin Fowler - ValueObject</a></li>
+<li><a href="https://martinfowler.com/bliki/DDD_Aggregate.html" target="_blank">Martin Fowler - DDD_Aggregate</a></li>
+<li><a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank">Martin Fowler - BoundedContext</a></li>
+<li><a href="https://www.dddcommunity.org/library/vernon_2011/" target="_blank">Vaughn Vernon - Effective Aggregate Design</a></li>
+<li><a href="https://spatie.be/courses/laravel-beyond-crud/domains" target="_blank">Spatie - Laravel Beyond CRUD, "Domains"</a></li>
+<li><a href="https://martinfowler.com/eaaCatalog/repository.html" target="_blank">Martin Fowler - Repository</a></li>
+</ul>
+
+<div class="lesson-footer">
+<p>Toàn bộ danh sách nguồn có annotation đầy đủ: xem <code>../RESOURCES.md</code>.</p>
+<div class="nav-links">
+  <a href="../lessons/0001-why-ddd-ubiquitous-language.html">Bài 1</a>
+  <a href="../lessons/0006-laravel-folder-structure.html">Bài 6</a>
+  <a href="../lessons/0008-persist-with-eloquent.html">Bài 8</a>
+</div>
+</div>
+
+</body>
+</html>

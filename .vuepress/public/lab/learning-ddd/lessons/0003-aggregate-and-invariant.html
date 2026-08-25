@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 3: Aggregate & Invariant</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Aggregate & Invariant</h1>
+<p class="subtitle">Bài 3 · Domain-Driven Design cho dự án Laravel đặt lịch (booking)</p>
+
+<h2>Khởi động: nhớ lại bài 2</h2>
+
+<div class="quiz" id="warmup">
+  <div class="quiz-question">Hai <code>TimeSlot</code> khác instance PHP nhưng cùng start/end - và hai <code>Booking</code> khác <code>BookingId</code> nhưng cùng <code>TimeSlot</code>. Phát biểu nào đúng?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Hai TimeSlot đó bằng nhau, hai Booking đó là hai booking khác nhau</button></li>
+    <li><button class="quiz-option">Hai TimeSlot đó khác nhau, hai Booking đó là cùng một booking</button></li>
+    <li><button class="quiz-option">Cả hai trường hợp đều là cùng một đối tượng về mặt nghiệp vụ</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<p>
+Nếu câu trên còn mơ hồ, quay lại <a href="0002-entity-vs-value-object.html">Bài 2</a> trước khi tiếp tục.
+</p>
+
+<h2>Invariant: quy tắc không bao giờ được vi phạm</h2>
+
+<p>
+Ở bài 2, <code>TimeSlot</code> đã có một invariant: "start phải trước end" -
+được bảo vệ ngay trong constructor, không có cách nào tạo một
+<code>TimeSlot</code> vi phạm điều đó. Đó là ví dụ đơn giản nhất của một
+<strong>invariant</strong>: một quy tắc nghiệp vụ phải <em>luôn luôn</em>
+đúng, ở mọi thời điểm.
+</p>
+
+<p>
+Nhưng invariant "không được đặt trùng khung giờ <strong>cho cùng một
+phòng</strong>" - quy tắc gốc từ bài 1 - phức tạp hơn nhiều. Nó không nằm
+trong một <code>Booking</code> duy nhất. Nó phụ thuộc vào <em>tất cả các
+booking khác</em> của cùng phòng đó. Đây là lúc cần khái niệm
+<strong>Aggregate</strong>.
+</p>
+
+<h2>Aggregate là gì?</h2>
+
+<p>
+Theo <a href="https://martinfowler.com/bliki/DDD_Aggregate.html" target="_blank">Martin Fowler</a>,
+một Aggregate là một cụm Entity + Value Object được coi là <strong>một đơn
+vị duy nhất</strong> khi thay đổi dữ liệu. Mỗi Aggregate có một
+<strong>Aggregate Root</strong> - đối tượng duy nhất mà bên ngoài được phép
+tham chiếu và gọi hành vi trực tiếp.
+</p>
+
+<div class="callout">
+<div class="callout-title">Định nghĩa quan trọng nhất của Aggregate</div>
+Aggregate là <strong>ranh giới nhất quán giao dịch</strong> (transactional
+consistency boundary) - theo Vaughn Vernon. Nói cách khác: mọi invariant bên
+<em>trong</em> một Aggregate phải đúng ngay sau khi transaction lưu xong.
+Nhưng invariant <em>giữa hai Aggregate khác nhau</em> thì DDD không hứa sẽ
+luôn đúng ngay lập tức - phải xử lý riêng.
+</div>
+
+<h2>Cái bẫy: invariant "không trùng giờ" nằm ở Aggregate nào?</h2>
+
+<p>
+Nếu <code>Booking</code> là Aggregate Root của chính nó (như bài 2), thì một
+instance <code>Booking</code> đơn lẻ <strong>không thể</strong> tự biết có
+booking nào khác trùng giờ hay không - nó không có tham chiếu tới các
+booking khác. Đặt code kiểm tra "trùng giờ" vào bên trong
+<code>Booking::confirm()</code> là vô nghĩa, vì <code>$this</code> chỉ biết
+về chính nó.
+</p>
+
+<p>
+Đây chính xác là vấn đề mà <a href="https://www.dddcommunity.org/library/vernon_2011/" target="_blank">Vaughn Vernon</a>
+cảnh báo trong "Effective Aggregate Design": rất dễ thiết kế sai ranh giới
+Aggregate, dẫn đến việc không biết đặt invariant liên-đối-tượng vào đâu.
+</p>
+
+<h2>Giải pháp: đổi Aggregate Root</h2>
+
+<p>
+Câu trả lời không phải là "làm cho Booking biết về mọi booking khác" (sẽ tạo
+ra một Aggregate khổng lồ, chậm, khó giao dịch). Câu trả lời là: nhận ra
+rằng quy tắc "không trùng giờ" thuộc về <strong>lịch của một phòng</strong>,
+không thuộc về một booking đơn lẻ. Cần một Aggregate mới:
+<code>RoomSchedule</code> - Aggregate Root chịu trách nhiệm cho invariant
+đó:
+</p>
+
+<pre><code><span class="code-keyword">final class</span> <span class="code-type">RoomSchedule</span>
+{
+    <span class="code-comment">/** @var TimeSlot[] */</span>
+    <span class="code-keyword">private array</span> $reservedSlots = [];
+
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private readonly</span> RoomId $roomId,
+    ) {}
+
+    <span class="code-keyword">public function</span> reserve(TimeSlot $slot): BookingId
+    {
+        <span class="code-keyword">foreach</span> ($this-&gt;reservedSlots <span class="code-keyword">as</span> $existing) {
+            <span class="code-keyword">if</span> ($existing-&gt;overlaps($slot)) {
+                <span class="code-keyword">throw new</span> SlotAlreadyBooked(
+                    <span class="code-string">'Khung giờ này đã có người đặt cho phòng này'</span>
+                );
+            }
+        }
+
+        $this-&gt;reservedSlots[] = $slot;
+
+        <span class="code-keyword">return</span> BookingId::generate();
+    }
+}</code></pre>
+
+<p>
+Bây giờ, invariant "không trùng giờ" nằm <strong>trong một Aggregate duy
+nhất</strong> (<code>RoomSchedule</code>) - và vì mọi thay đổi trên một
+Aggregate diễn ra trong một transaction, invariant này được đảm bảo đúng
+ngay lập tức. <code>Booking</code> vẫn là Entity riêng, nhưng nó được tạo ra
+<em>thông qua</em> <code>RoomSchedule.reserve()</code>, không tự tạo ra một
+mình.
+</p>
+
+<div class="callout green">
+<div class="callout-title">Quy tắc thiết kế Aggregate của Vernon</div>
+1) Bảo vệ invariant nghiệp vụ thật (không phải mọi ràng buộc kỹ thuật) bên
+trong ranh giới Aggregate. 2) Thiết kế Aggregate <strong>nhỏ</strong>. 3)
+Tham chiếu Aggregate khác chỉ bằng ID (ví dụ <code>RoomId</code>), không
+nhúng cả object. 4) Nếu một invariant bắt buộc phải xuyên qua nhiều
+Aggregate, chấp nhận nó là <em>eventual consistency</em> (đúng sau một
+khoảng thời gian ngắn), không phải transactional.
+</div>
+
+<h2>Kiểm tra nhanh</h2>
+
+<div class="quiz" id="quiz">
+
+  <div class="quiz-question">Câu 1. Vì sao không nên đặt logic kiểm tra "trùng khung giờ" bên trong <code>Booking::confirm()</code>?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Vì một Booking đơn lẻ không có tham chiếu tới các booking khác để so sánh</button></li>
+    <li><button class="quiz-option">Vì method confirm() trong PHP không được phép chứa câu lệnh if/else</button></li>
+    <li><button class="quiz-option">Vì Eloquent Model không cho phép gọi query bên trong một method bất kỳ</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+  <div class="quiz-question" style="margin-top: 1.8rem;">Câu 2. Aggregate là "ranh giới nhất quán giao dịch" nghĩa là gì?</div>
+  <ul class="quiz-options">
+    <li><button class="quiz-option" data-correct="true">Mọi invariant bên trong một Aggregate phải đúng ngay sau khi transaction lưu xong</button></li>
+    <li><button class="quiz-option">Mọi Aggregate trong hệ thống phải nằm trong một transaction database duy nhất</button></li>
+    <li><button class="quiz-option">Aggregate là ranh giới xác định class nào được viết trong cùng một file</button></li>
+  </ul>
+  <div class="quiz-feedback"></div>
+
+</div>
+
+<h2>Nguồn nên đọc</h2>
+
+<div class="source-rec">
+<strong>Đọc chính (bắt buộc):</strong>
+<a href="https://www.dddcommunity.org/library/vernon_2011/" target="_blank">Vaughn Vernon - "Effective Aggregate Design", Phần I</a>
+- nguồn kinh điển nhất về cách xác định ranh giới Aggregate, viết bởi tác giả của "Implementing Domain-Driven Design". Khoảng 15-20 phút đọc, đáng đầu tư.
+</div>
+
+<div class="source-rec">
+<strong>Đọc thêm (khi có thời gian):</strong>
+<a href="https://martinfowler.com/bliki/DDD_Aggregate.html" target="_blank">Martin Fowler - "DDD_Aggregate"</a>
+- bản tóm tắt nhanh nếu chưa có thời gian đọc cả 3 phần của Vernon.
+</div>
+
+<div class="lesson-footer">
+<p>
+<strong>Có gì chưa rõ?</strong> Nếu bạn đang tự hỏi "vậy Payment hay
+Notification có phải là Aggregate riêng không?" - đó chính xác là câu hỏi
+bài 4 (Bounded Context) sẽ trả lời. Cứ hỏi mình trước nếu muốn đào sâu ngay.
+</p>
+<div class="nav-links">
+  <a href="0002-entity-vs-value-object.html">&larr; Bài 2: Entity vs Value Object</a>
+  <a href="0004-bounded-context.html">Bài 4: Bounded Context &rarr;</a>
+</div>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const questions = quiz.querySelectorAll('.quiz-question');
+  questions.forEach((q) => {
+    const optionsList = q.nextElementSibling;
+    const feedback = optionsList.nextElementSibling;
+    const options = optionsList.querySelectorAll('.quiz-option');
+    options.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const isCorrect = btn.getAttribute('data-correct') === 'true';
+        options.forEach(b => {
+          b.disabled = true;
+          if (b.getAttribute('data-correct') === 'true') {
+            b.classList.add('correct');
+          } else if (b === btn) {
+            b.classList.add('wrong');
+          }
+        });
+        feedback.textContent = isCorrect
+          ? 'Đúng.'
+          : 'Chưa đúng - đáp án xanh là câu trả lời đúng. Đọc lại phần liên quan ở trên nếu cần.';
+        feedback.classList.add('show');
+      });
+    });
+  });
+});
+</script>
+
+</body>
+</html>
