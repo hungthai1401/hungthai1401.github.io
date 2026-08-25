@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bài 6 — Ghép lại: Dự án Laravel mới từ đầu</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Ghép lại: dự án Laravel mới</h1>
+  <p class="subtitle">Bài 6 / Clean Architecture + Laravel &middot; ~12 phút &middot; Bài tổng kết</p>
+
+  <!-- ====================================================== -->
+
+  <p>Năm bài trước dạy từng khái niệm riêng lẻ: Dependency Rule, Entity, Use Case, Port/Adapter, Testing. Bài này ghép chúng lại thành một dự án Laravel thật, từ <code>laravel new</code> đến feature đầu tiên chạy được — đúng với mục tiêu ban đầu của bạn trong <code>MISSION.md</code>: <em>xây dựng dự án mới đúng cách ngay từ đầu</em>.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Bước 1: Cấu trúc thư mục — không cần sửa composer.json</h2>
+
+  <p>Tin tốt: Laravel mặc định map namespace <code>App\</code> vào thư mục <code>app/</code> qua PSR-4. Nghĩa là <code>app/Domain/Order/Order.php</code> tự động thuộc namespace <code>App\Domain\Order</code> — <strong>không cần sửa gì trong <code>composer.json</code></strong>. Chỉ cần tạo thư mục và đặt namespace đúng.</p>
+
+  <pre><code>app/
+├── Domain/                    <span class="code-comment">← Bài 2: Entities</span>
+│   └── Order/
+│       ├── Order.php
+│       ├── OrderId.php
+│       ├── OrderStatus.php
+│       └── Exceptions/
+│           ├── CannotCancelShippedOrder.php
+│           └── CancellationWindowExpired.php
+│
+├── Application/               <span class="code-comment">← Bài 3: Use Cases</span>
+│   ├── Order/
+│   │   └── CreateOrder/
+│   │       ├── CreateOrderUseCase.php
+│   │       ├── CreateOrderInput.php
+│   │       └── CreateOrderOutput.php
+│   └── Ports/                 <span class="code-comment">← Bài 4: Ports</span>
+│       ├── OrderRepository.php
+│       └── PaymentGateway.php
+│
+├── Http/                      <span class="code-comment">← Interface Adapters (giao diện HTTP)</span>
+│   └── Controllers/
+│       └── OrderController.php
+│
+├── Infrastructure/            <span class="code-comment">← Bài 4: Adapters</span>
+│   ├── Persistence/
+│   │   ├── EloquentOrderRepository.php
+│   │   └── Models/
+│   │       └── OrderModel.php
+│   └── Payment/
+│       └── StripePaymentGateway.php
+│
+└── Providers/
+    └── AppServiceProvider.php <span class="code-comment">← nối Port ↔ Adapter</span>
+
+tests/
+├── Unit/
+│   ├── Domain/OrderTest.php         <span class="code-comment">← Bài 5, tầng 1</span>
+│   └── Application/CreateOrderUseCaseTest.php  <span class="code-comment">← Bài 5, tầng 2</span>
+├── Fakes/
+│   ├── InMemoryOrderRepository.php
+│   └── FakePaymentGateway.php
+└── Integration/
+    └── EloquentOrderRepositoryTest.php  <span class="code-comment">← Bài 5, tầng 3</span></code></pre>
+
+  <div class="callout">
+    <div class="callout-title">Lệnh khởi tạo</div>
+    <p style="margin-bottom:0"><code>laravel new my-app</code>, sau đó <code>mkdir -p app/{Domain,Application/Ports,Infrastructure/Persistence/Models,Infrastructure/Payment}</code>. Laravel không quan tâm bạn đặt thư mục nào miễn namespace khớp đường dẫn.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Bước 2: Nối dây — AppServiceProvider</h2>
+
+  <p>Đây là <strong>nơi duy nhất</strong> trong toàn bộ app biết cả Port và Adapter cùng lúc. Mọi vòng khác chỉ biết một bên.</p>
+
+  <pre><code><span class="code-comment">// app/Providers/AppServiceProvider.php</span>
+<span class="code-keyword">public function</span> register(): <span class="code-type">void</span> {
+    $<span class="code-keyword">this</span>-&gt;app-&gt;bind(<span class="code-type">OrderRepository</span>::class, <span class="code-type">EloquentOrderRepository</span>::class);
+    $<span class="code-keyword">this</span>-&gt;app-&gt;bind(<span class="code-type">PaymentGateway</span>::class, <span class="code-type">StripePaymentGateway</span>::class);
+}</code></pre>
+
+  <!-- ====================================================== -->
+
+  <h2>Bước 3: Route → Controller → Use Case</h2>
+
+  <pre><code><span class="code-comment">// routes/api.php</span>
+Route::post(<span class="code-string">'/orders'</span>, [OrderController::class, <span class="code-string">'store'</span>]);</code></pre>
+
+  <p>Laravel tự resolve <code>OrderController</code>, thấy nó cần <code>CreateOrderUseCase</code>, thấy Use Case đó cần <code>OrderRepository</code> và <code>PaymentGateway</code> — và tự tiêm <code>EloquentOrderRepository</code> + <code>StripePaymentGateway</code> nhờ binding ở Bước 2. Bạn không phải <code>new</code> tay bất cứ thứ gì.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Đường đi của một request, từ đầu đến cuối</h2>
+
+  <div class="diagram">
+    <svg width="600" height="140" viewBox="0 0 600 140" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow6" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+          <polygon points="0 0, 7 3.5, 0 7" fill="#c1462e"/>
+        </marker>
+      </defs>
+      <!-- boxes -->
+      <rect x="10" y="50" width="90" height="40" rx="4" fill="#f2f0ec" stroke="#d8d4ce"/>
+      <text x="55" y="74" text-anchor="middle" font-family="Helvetica" font-size="11">HTTP POST</text>
+
+      <rect x="130" y="50" width="100" height="40" rx="4" fill="#f2f0ec" stroke="#d8d4ce"/>
+      <text x="180" y="74" text-anchor="middle" font-family="Helvetica" font-size="11">Controller</text>
+
+      <rect x="260" y="50" width="100" height="40" rx="4" fill="#e8d5cf" stroke="#c1462e"/>
+      <text x="310" y="74" text-anchor="middle" font-family="Helvetica" font-size="11">Use Case</text>
+
+      <rect x="390" y="50" width="90" height="40" rx="4" fill="#e8d5cf" stroke="#c1462e"/>
+      <text x="435" y="74" text-anchor="middle" font-family="Helvetica" font-size="11">Entity</text>
+
+      <rect x="260" y="105" width="100" height="30" rx="4" fill="#d4e4d8" stroke="#2d6a4f"/>
+      <text x="310" y="124" text-anchor="middle" font-family="Helvetica" font-size="10">Port (interface)</text>
+
+      <rect x="390" y="105" width="130" height="30" rx="4" fill="#f2f0ec" stroke="#d8d4ce"/>
+      <text x="455" y="124" text-anchor="middle" font-family="Helvetica" font-size="10">Adapter (Eloquent)</text>
+
+      <line x1="100" y1="70" x2="128" y2="70" stroke="#888" stroke-width="1.5" marker-end="url(#arrow6)"/>
+      <line x1="230" y1="70" x2="258" y2="70" stroke="#888" stroke-width="1.5" marker-end="url(#arrow6)"/>
+      <line x1="360" y1="70" x2="388" y2="70" stroke="#888" stroke-width="1.5" marker-end="url(#arrow6)"/>
+      <line x1="310" y1="90" x2="310" y2="103" stroke="#888" stroke-width="1.5" marker-end="url(#arrow6)"/>
+      <line x1="360" y1="120" x2="388" y2="120" stroke="#888" stroke-width="1.5" marker-end="url(#arrow6)"/>
+    </svg>
+    <div class="diagram-caption">Controller đọc Request &rarr; Use Case điều phối &rarr; Entity áp dụng rule &rarr; Use Case gọi Port &rarr; Adapter thực thi persistence</div>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Đối chiếu với mục tiêu ban đầu</h2>
+
+  <p>Nhìn lại <code>MISSION.md</code> — đây là 5 tiêu chí "success looks like" bạn đặt ra từ đầu:</p>
+
+  <table>
+    <thead><tr><th>Tiêu chí</th><th>Đã học ở bài nào</th></tr></thead>
+    <tbody>
+      <tr><td>Giải thích Dependency Rule</td><td>Bài 1</td></tr>
+      <tr><td>Phân tách 4 layer</td><td>Bài 1, 6</td></tr>
+      <tr><td>Thiết kế Use Case không phụ thuộc Eloquent/HTTP</td><td>Bài 2, 3, 4</td></tr>
+      <tr><td>Viết unit test không cần DB/HTTP</td><td>Bài 5</td></tr>
+      <tr><td>Cấu trúc thư mục dự án Laravel mới</td><td>Bài 6 (bài này)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout green">
+    <div class="callout-title">Bạn đã đủ nền tảng để bắt đầu</div>
+    <p style="margin-bottom:0">Với 6 bài này, bạn có đủ để dựng một feature hoàn chỉnh theo Clean Architecture trong dự án Laravel mới. Phần còn lại là luyện tập: viết thêm Use Case cho các feature khác, và tinh chỉnh theo domain thực tế của bạn.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Kiểm tra hiểu biết</h2>
+
+  <div class="quiz">
+    <div class="quiz-question">Trong dự án Laravel, class nào là nơi <strong>duy nhất</strong> biết cả Port và Adapter cùng lúc?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Controller</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Use Case</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">AppServiceProvider (nơi khai báo binding)</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Entity</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-1-feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-question">Vì sao không cần sửa <code>composer.json</code> khi thêm thư mục <code>app/Domain</code> hay <code>app/Application</code>?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì Laravel tự động scan toàn bộ thư mục app/ mỗi request</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Vì PSR-4 đã map namespace App\\ vào toàn bộ thư mục app/, kể cả thư mục con mới tạo</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì các class trong Domain/ và Application/ không cần namespace</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì Artisan tự sinh autoload khi chạy migrate</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-2-feedback"></div>
+  </div>
+
+  <script>
+    function handleQuiz(btn, isCorrect) {
+      const quiz = btn.closest('.quiz');
+      const feedback = quiz.querySelector('.quiz-feedback');
+      const options = quiz.querySelectorAll('.quiz-option');
+
+      options.forEach(opt => {
+        opt.disabled = true;
+        const correct = opt.getAttribute('onclick').includes('true');
+        if (correct) opt.classList.add('correct');
+      });
+
+      if (isCorrect) {
+        btn.classList.add('correct');
+        feedback.innerHTML = '<strong>Đúng.</strong> AppServiceProvider là điểm nối duy nhất — mọi class khác chỉ biết một bên (Port hoặc Adapter), không bao giờ biết cả hai.';
+      } else {
+        btn.classList.add('wrong');
+        feedback.innerHTML = '<strong>Chưa chính xác.</strong> Xem lại Bước 2: chỉ AppServiceProvider (hoặc một Service Provider tương đương) mới khai báo binding Port ↔ Adapter.';
+      }
+      feedback.classList.add('show');
+    }
+  </script>
+
+  <!-- ====================================================== -->
+
+  <div class="lesson-footer">
+    <div class="source-rec">
+      <strong>Nguồn đọc chính:</strong> Laravel Documentation — <strong>Service Container: Binding Interfaces to Implementations</strong>, phần giải thích chính thức cách <code>bind()</code> hoạt động.
+      <br><a href="https://laravel.com/docs/container#binding-interfaces-to-implementations">Laravel Docs: Binding Interfaces to Implementations &rarr;</a>
+    </div>
+
+    <p><strong>Tài liệu tham chiếu:</strong> <a href="../reference/clean-architecture-cheatsheet.html">Clean Architecture Cheat Sheet</a> — đã có sẵn cấu trúc thư mục này, dùng làm checklist khi bắt đầu dự án mới.</p>
+
+    <div class="callout">
+      <div class="callout-title">Bước tiếp theo?</div>
+      <p style="margin-bottom:0">Bạn đã hoàn thành lộ trình nền tảng 6 bài. Hỏi tôi nếu muốn: (1) thực hành bằng cách viết một Use Case thật cho domain của bạn, (2) học sâu hơn về Value Objects / DDD, hoặc (3) thảo luận CQRS khi hệ thống phức tạp hơn. Cho tôi biết bạn muốn đi hướng nào.</p>
+    </div>
+
+    <div class="nav-links">
+      <a href="./0005-testing.html">&larr; Bài 5: Testing</a>
+      <a href="./0007-value-objects.html">Bài 7: Value Objects &rarr;</a>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clean Architecture — Cheat Sheet</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Clean Architecture — Cheat Sheet</h1>
+  <p class="subtitle">Tài liệu tham chiếu nhanh &middot; PHP / Laravel</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Quy tắc vàng</h2>
+  <div class="callout">
+    <div class="callout-title">Dependency Rule</div>
+    <p style="margin-bottom:0">Dependency chỉ chảy <strong>hướng vào trong</strong>. Vòng trong không được biết gì về vòng ngoài.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Bốn vòng (từ trong ra ngoài)</h2>
+
+  <table>
+    <thead>
+      <tr><th>Vòng</th><th>Vai trò</th><th>Ví dụ PHP/Laravel</th><th>Phụ thuộc vào</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Entities</strong></td>
+        <td>Business rules cốt lõi của doanh nghiệp. Tồn tại độc lập với ứng dụng.</td>
+        <td><code>Order</code>, <code>Money</code>, <code>Customer</code> (thuần PHP class)</td>
+        <td>Không gì cả. Không framework, không DB.</td>
+      </tr>
+      <tr>
+        <td><strong>Use Cases</strong></td>
+        <td>Application business rules. Điều phối flow của một tác vụ cụ thể.</td>
+        <td><code>CreateOrderUseCase</code>, <code>CancelOrderUseCase</code></td>
+        <td>Entity + Interface (Port) của vòng ngoài</td>
+      </tr>
+      <tr>
+        <td><strong>Interface Adapters</strong></td>
+        <td>Chuyển đổi dữ liệu giữa Use Cases và cấu trúc bên ngoài.</td>
+        <td>Controllers, DTOs, View Models, Repository interfaces</td>
+        <td>Use Case + Entity</td>
+      </tr>
+      <tr>
+        <td><strong>Frameworks &amp; Drivers</strong></td>
+        <td>Công cụ, I/O, framework. Chi tiết kỹ thuật.</td>
+        <td>Laravel Router, Eloquent, MySQL, Redis, Mail, Queue</td>
+        <td>Tất cả các vòng trong</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ====================================================== -->
+
+  <h2>So sánh nhanh: Layered vs Clean</h2>
+
+  <table>
+    <thead>
+      <tr><th>&nbsp;</th><th>Layered (truyền thống)</th><th>Clean Architecture</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Hướng dependency</strong></td>
+        <td>Từ trên xuống dưới (UI &rarr; Logic &rarr; Data)</td>
+        <td>Từ ngoài vào trong (Frames &rarr; Adapters &rarr; Use Cases &rarr; Entities)</td>
+      </tr>
+      <tr>
+        <td><strong>Business logic biết về DB?</strong></td>
+        <td>Có (Service gọi trực tiếp Eloquent)</td>
+        <td>Không (Use Case gọi interface, DB implement interface)</td>
+      </tr>
+      <tr>
+        <td><strong>Test business logic</strong></td>
+        <td>Cần DB hoặc mocking nặng</td>
+        <td>Mock interface, chạy trong RAM, nhanh</td>
+      </tr>
+      <tr>
+        <td><strong>Đổi framework</strong></td>
+        <td>Viết lại phần lớn code</td>
+        <td>Chỉ thay vòng ngoài, vòng trong không đổi</td>
+      </tr>
+      <tr>
+        <td><strong>Phù hợp</strong></td>
+        <td>App đơn giản, CRUD, MVP nhanh</td>
+        <td>App phức tạp, long-lived, nhiều domain rule</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ====================================================== -->
+
+  <h2>Glossary</h2>
+
+  <h3>Thuật ngữ cốt lõi</h3>
+  <p>
+    <strong>Entity</strong>: Đối tượng chứa business rule thuần. Không kế thừa Eloquent Model. Biết cách tự validate, tính toán, và áp dụng quy tắc nghiệp vụ.
+    <br><em>Tránh gọi:</em> Model, DTO
+  </p>
+
+  <p>
+    <strong>Use Case</strong>: Một tác vụ cụ thể mà hệ thống thực hiện (ví dụ: tạo đơn hàng, hủy đơn hàng). Chứa application flow, không chứa domain rule.
+    <br><em>Tránh gọi:</em> Service, Controller action
+  </p>
+
+  <p>
+    <strong>Port</strong>: Interface định nghĩa cách Use Case giao tiếp với thế giới bên ngoài. Định nghĩa ở vòng trong, implemented ở vòng ngoài.
+    <br><em>Đồng nghĩa:</em> Repository interface, Gateway
+  </p>
+
+  <p>
+    <strong>Adapter</strong>: Implementation cụ thể của một Port. Ví dụ: <code>EloquentOrderRepository</code> implements <code>OrderRepository</code> interface.
+    <br><em>Đồng nghĩa:</em> Repository implementation, Gateway implementation
+  </p>
+
+  <p>
+    <strong>DTO (Data Transfer Object)</strong>: Cấu trúc dữ liệu đơn thuần, không có logic. Dùng để truyền dữ liệu giữa các layer.
+    <br><em>Tránh gọi:</em> Model, Entity
+  </p>
+
+  <p>
+    <strong>Dependency Inversion</strong>: Nguyên lý (SOLID - chữ D). Vòng trong định nghĩa interface, vòng ngoài implement. Đảo ngược hướng dependency tự nhiên.
+  </p>
+
+  <!-- ====================================================== -->
+
+  <h2>Cấu trúc thư mục gợi ý (Laravel)</h2>
+
+  <pre><code>app/
+├── Domain/                    <span class="code-comment">← Vòng Entities</span>
+│   ├── Order/
+│   │   ├── Order.php          <span class="code-comment">// Entity thuần PHP</span>
+│   │   ├── OrderId.php        <span class="code-comment">// Value Object</span>
+│   │   └── OrderStatus.php    <span class="code-comment">// Enum</span>
+│   └── Customer/
+│
+├── Application/               <span class="code-comment">← Vòng Use Cases</span>
+│   ├── Order/
+│   │   ├── CreateOrder/
+│   │   │   ├── CreateOrderUseCase.php
+│   │   │   ├── CreateOrderInput.php   <span class="code-comment">// DTO</span>
+│   │   │   └── CreateOrderOutput.php  <span class="code-comment">// DTO</span>
+│   │   └── CancelOrder/
+│   │       └── CancelOrderUseCase.php
+│   └── Ports/                 <span class="code-comment">← Interface (Port)</span>
+│       ├── OrderRepositoryInterface.php
+│       └── PaymentGatewayInterface.php
+│
+├── Http/                      <span class="code-comment">← Vòng Interface Adapters</span>
+│   ├── Controllers/
+│   │   └── OrderController.php
+│   └── ViewModels/
+│
+└── Infrastructure/            <span class="code-comment">← Vòng Frameworks & Drivers</span>
+    ├── Persistence/
+    │   ├── EloquentOrderRepository.php  <span class="code-comment">// Adapter</span>
+    │   └── Models/
+    │       └── OrderModel.php           <span class="code-comment">// Eloquent Model</span>
+    ├── Payment/
+    │   └── StripePaymentGateway.php    <span class="code-comment">// Adapter</span>
+    └── Queue/</code></pre>
+
+  <!-- ====================================================== -->
+
+  <h2>Khi nào KHÔNG nên dùng Clean Architecture?</h2>
+
+  <ul>
+    <li><strong>CRUD app đơn giản:</strong> nếu logic chỉ là tạo/đọc/sửa/xóa, Clean Architecture là overkill. Layered hoặc thậm chí controller-trực-tiếp đủ rồi.</li>
+    <li><strong>MVP cần ship nhanh:</strong> deadline tuần sau? Viết thẳng trong controller, refactor sau.</li>
+    <li><strong>Team chưa quen:</strong> Clean Architecture cần hiểu SOLID vững. Nếu team chưa sẵn sàng, nó trở thành儀式 thay vì giá trị.</li>
+    <li><strong>App lifetime ngắn:</strong> prototype, hackathon, internal tool dùng vài tháng — không đáng đầu tư.</li>
+  </ul>
+
+  <div class="callout">
+    <div class="callout-title">Nguyên tắc thực dụng</div>
+    <p style="margin-bottom:0">Clean Architecture là <em>công cụ</em>, không phải <em>mục tiêu</em>. Độ phức tạp của architecture phải tỉ lệ với độ phức tạp của bài toán.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <div class="lesson-footer">
+    <p><a href="../lessons/0001-the-dependency-rule.html">&larr; Về Bài 1: Dependency Rule</a></p>
+    <p><a href="../RESOURCES.md">Xem danh sách tài liệu &rarr;</a></p>
+  </div>
+
+</body>
+</html>

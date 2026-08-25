@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bài 7 — Value Objects: Chữa bệnh Primitive Obsession</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Value Objects</h1>
+  <p class="subtitle">Bài 7 / Clean Architecture + Laravel &middot; ~10 phút &middot; Mở rộng: Domain-Driven Design</p>
+
+  <!-- ====================================================== -->
+
+  <p>Ở Bài 1 và 2, bạn đã thấy <code>OrderId</code>, <code>Money</code>, <code>OrderStatus</code> xuất hiện trong constructor của <code>Order</code> — thay vì <code>string $id</code>, <code>float $total</code>, <code>string $status</code>. Bài này giải thích tại sao, và dạy bạn tự viết những class như vậy.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Primitive Obsession: căn bệnh phổ biến nhất</h2>
+
+  <p>Dùng <code>string</code>, <code>int</code>, <code>float</code> cho mọi thứ trông tiện, nhưng nó âm thầm loại bỏ mọi ý nghĩa nghiệp vụ khỏi type system:</p>
+
+  <pre><code><span class="code-keyword">function</span> transfer(<span class="code-type">float</span> $amount, <span class="code-type">string</span> $currency, <span class="code-type">string</span> $fromAccount, <span class="code-type">string</span> $toAccount) {
+    <span class="code-comment">// Không gì ngăn bạn gọi transfer(-100, 'XYZ', $to, $from) — đảo ngược tham số</span>
+    <span class="code-comment">// Không gì ngăn currency là "usd" viết thường, hay "US Dollar" đầy đủ</span>
+    <span class="code-comment">// Không gì đảm bảo $amount không phải NaN hay số âm</span>
+}</code></pre>
+
+  <p>PHP không báo lỗi vì <code>string</code> nào cũng là <code>string</code>. Bug chỉ lộ ra khi chạy — hoặc tệ hơn, không lộ ra và âm thầm sai dữ liệu.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Value Object là gì?</h2>
+
+  <div class="callout">
+    <div class="callout-title">Value Object</div>
+    <p style="margin-bottom:0">Một object đại diện cho <strong>một giá trị</strong>, không có identity riêng. Hai Value Object bằng nhau nếu mọi thuộc tính bằng nhau — không quan tâm "là cùng một object" hay không. Nó <strong>immutable</strong> (không đổi state sau khi tạo) và <strong>tự validate</strong> ngay tại constructor.</p>
+  </div>
+
+  <p>So sánh với Entity mà bạn học ở Bài 2:</p>
+
+  <table>
+    <thead><tr><th>&nbsp;</th><th>Entity</th><th>Value Object</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Bằng nhau khi</strong></td>
+        <td>Cùng identity (<code>OrderId</code> giống nhau), dù thuộc tính khác đổi</td>
+        <td>Mọi thuộc tính giống nhau</td>
+      </tr>
+      <tr>
+        <td><strong>Ví dụ</strong></td>
+        <td><code>Order</code> #123 vẫn là đơn hàng đó dù status đổi từ pending → shipped</td>
+        <td><code>Money(100, 'USD')</code> luôn bằng <code>Money(100, 'USD')</code> khác, mọi lúc</td>
+      </tr>
+      <tr>
+        <td><strong>Mutable?</strong></td>
+        <td>Có thể đổi state qua method (<code>cancel()</code>)</td>
+        <td>Không bao giờ — mọi "thay đổi" tạo instance mới</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ====================================================== -->
+
+  <h2>Ví dụ: Money — immutable, tự validate, có arithmetic</h2>
+
+  <pre><code><span class="code-comment">// app/Domain/Shared/Money.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">Money</span> {
+    <span class="code-keyword">private function</span> __construct(
+        <span class="code-keyword">private readonly</span> <span class="code-type">int</span> $cents,     <span class="code-comment">// lưu bằng cents, tránh lỗi float</span>
+        <span class="code-keyword">private readonly</span> <span class="code-type">string</span> $currency,
+    ) {}
+
+    <span class="code-keyword">public static function</span> fromCents(<span class="code-type">int</span> $cents, <span class="code-type">string</span> $currency): <span class="code-keyword">self</span> {
+        <span class="code-keyword">if</span> ($cents &lt; 0) {
+            <span class="code-keyword">throw new</span> <span class="code-type">InvalidArgumentException</span>(<span class="code-string">'Money cannot be negative'</span>);
+        }
+        <span class="code-keyword">if</span> (!<span class="code-keyword">in_array</span>($currency, [<span class="code-string">'USD'</span>, <span class="code-string">'VND'</span>, <span class="code-string">'EUR'</span>], <span class="code-keyword">true</span>)) {
+            <span class="code-keyword">throw new</span> <span class="code-type">InvalidArgumentException</span>(<span class="code-string">"Unsupported currency: {$currency}"</span>);
+        }
+        <span class="code-keyword">return new self</span>($cents, $currency);  <span class="code-comment">// invariant được đảm bảo TẠI ĐÂY, mãi mãi</span>
+    }
+
+    <span class="code-keyword">public function</span> add(<span class="code-type">Money</span> $other): <span class="code-keyword">self</span> {
+        $<span class="code-keyword">this</span>-&gt;assertSameCurrency($other);
+        <span class="code-keyword">return new self</span>($<span class="code-keyword">this</span>-&gt;cents + $other-&gt;cents, $<span class="code-keyword">this</span>-&gt;currency);  <span class="code-comment">// instance MỚI, không đổi $this</span>
+    }
+
+    <span class="code-keyword">public function</span> equals(<span class="code-type">Money</span> $other): <span class="code-type">bool</span> {
+        <span class="code-keyword">return</span> $<span class="code-keyword">this</span>-&gt;cents === $other-&gt;cents &amp;&amp; $<span class="code-keyword">this</span>-&gt;currency === $other-&gt;currency;
+    }
+
+    <span class="code-keyword">private function</span> assertSameCurrency(<span class="code-type">Money</span> $other): <span class="code-type">void</span> {
+        <span class="code-keyword">if</span> ($<span class="code-keyword">this</span>-&gt;currency !== $other-&gt;currency) {
+            <span class="code-keyword">throw new</span> <span class="code-type">CurrencyMismatchException</span>($<span class="code-keyword">this</span>-&gt;currency, $other-&gt;currency);
+        }
+    }
+
+    <span class="code-keyword">public function</span> toCents(): <span class="code-type">int</span> { <span class="code-keyword">return</span> $<span class="code-keyword">this</span>-&gt;cents; }
+    <span class="code-keyword">public function</span> currency(): <span class="code-type">string</span> { <span class="code-keyword">return</span> $<span class="code-keyword">this</span>-&gt;currency; }
+}</code></pre>
+
+  <div class="callout green">
+    <div class="callout-title">Điều KHÔNG THỂ xảy ra nữa</div>
+    <p style="margin-bottom:0">Không có <code>Money</code> âm nào tồn tại trong hệ thống — constructor chặn ngay từ đầu. Không có phép cộng USD + VND vô tình xảy ra — <code>add()</code> tự chặn. Bug mà trước đây phải test runtime mới phát hiện, giờ <strong>không thể compile được logic sai</strong> (hoặc bị exception ngay lập tức, không lan ra xa).</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Value Object làm Entity chặt chẽ hơn (nối lại Bài 2)</h2>
+
+  <pre><code><span class="code-comment">// So sánh: Entity dùng primitive vs dùng Value Object</span>
+
+<span class="code-comment">// Trước — primitive obsession</span>
+<span class="code-keyword">final class</span> <span class="code-type">Order</span> {
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private</span> <span class="code-type">string</span> $id,
+        <span class="code-keyword">private</span> <span class="code-type">float</span> $total,      <span class="code-comment">// đơn vị gì? USD? cents?</span>
+        <span class="code-keyword">private</span> <span class="code-type">string</span> $status,    <span class="code-comment">// giá trị hợp lệ nào? không ai biết trừ khi đọc code khác</span>
+    ) {}
+}
+
+<span class="code-comment">// Sau — Value Objects làm rõ ý nghĩa và tự bảo vệ invariant</span>
+<span class="code-keyword">final class</span> <span class="code-type">Order</span> {
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private</span> <span class="code-type">OrderId</span> $id,           <span class="code-comment">// không thể nhầm với CustomerId (cũng là string)</span>
+        <span class="code-keyword">private</span> <span class="code-type">Money</span> $total,          <span class="code-comment">// luôn có currency, luôn &gt;= 0</span>
+        <span class="code-keyword">private</span> <span class="code-type">OrderStatus</span> $status,   <span class="code-comment">// enum, chỉ nhận giá trị hợp lệ</span>
+    ) {}
+}</code></pre>
+
+  <!-- ====================================================== -->
+
+  <h2>Kiểm tra hiểu biết</h2>
+
+  <div class="quiz">
+    <div class="quiz-question"><code>Money::fromCents(100, 'USD')</code> và <code>Money::fromCents(100, 'USD')</code> — hai instance khác nhau trong bộ nhớ. Chúng có "bằng nhau" theo nghĩa Value Object không?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Không, vì chúng là hai object khác nhau (khác địa chỉ bộ nhớ)</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Có, vì mọi thuộc tính (cents, currency) giống nhau — Value Object bằng nhau theo giá trị, không theo identity</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Chỉ bằng nhau nếu gọi === trong PHP</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Không thể xác định nếu không có OrderId</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-1-feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-question">Method <code>add()</code> của <code>Money</code> trả về <code>self</code> mới thay vì sửa <code>$this</code>. Đây thể hiện nguyên tắc nào?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Dependency Inversion Principle</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Immutability — Value Object không đổi state sau khi tạo</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Single Responsibility Principle</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Dependency Rule của Clean Architecture</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-2-feedback"></div>
+  </div>
+
+  <script>
+    function handleQuiz(btn, isCorrect) {
+      const quiz = btn.closest('.quiz');
+      const feedback = quiz.querySelector('.quiz-feedback');
+      const options = quiz.querySelectorAll('.quiz-option');
+
+      options.forEach(opt => {
+        opt.disabled = true;
+        const correct = opt.getAttribute('onclick').includes('true');
+        if (correct) opt.classList.add('correct');
+      });
+
+      if (isCorrect) {
+        btn.classList.add('correct');
+        feedback.innerHTML = '<strong>Đúng.</strong> Value Object không có identity — chỉ có giá trị. Hai instance với cùng thuộc tính là "cùng một giá trị", bất kể có phải cùng object trong bộ nhớ hay không.';
+      } else {
+        btn.classList.add('wrong');
+        feedback.innerHTML = '<strong>Chưa chính xác.</strong> Nhớ lại: Value Object khác Entity ở điểm không có identity riêng — equality dựa trên toàn bộ thuộc tính, và mọi "thay đổi" phải tạo ra instance mới (immutability).';
+      }
+      feedback.classList.add('show');
+    }
+  </script>
+
+  <!-- ====================================================== -->
+
+  <div class="lesson-footer">
+    <div class="source-rec">
+      <strong>Nguồn đọc chính:</strong> Eric Evans — <em>Domain-Driven Design: Tackling Complexity in the Heart of Software</em>, chương về Value Objects. Bản tiếng Anh dễ tiếp cận hơn:
+      <br><a href="https://www.phparch.com/2022/09/writing-cleaner-more-resilient-code-with-value-objects/">Writing Cleaner, More Resilient Code With Value Objects (php[architect]) &rarr;</a>
+    </div>
+
+    <p><strong>Tài liệu tham chiếu:</strong> <a href="../reference/clean-architecture-cheatsheet.html">Clean Architecture Cheat Sheet</a> — có thể thêm mục Value Object vào glossary nếu bạn muốn ôn lại sau.</p>
+
+    <div class="callout">
+      <div class="callout-title">Câu hỏi tiếp theo?</div>
+      <p style="margin-bottom:0">Hỏi tôi ngay nếu chưa rõ. Ví dụ: <em>"Value Object có nên implement Eloquent Castable để lưu trực tiếp vào DB không?"</em> hoặc <em>"OrderId là Value Object hay là gì khác, vì nó chỉ có một thuộc tính?"</em></p>
+    </div>
+
+    <div class="nav-links">
+      <a href="./0006-project-structure.html">&larr; Bài 6: Cấu trúc dự án Laravel mới</a>
+      <span>Tiếp theo trong DDD: sẽ hỏi ý bạn &rarr;</span>
+    </div>
+  </div>
+
+</body>
+</html>

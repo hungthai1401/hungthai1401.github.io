@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bài 1 — Dependency Rule: Linh hồn của Clean Architecture</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Dependency Rule</h1>
+  <p class="subtitle">Bài 1 / Clean Architecture + Laravel &middot; ~10 phút</p>
+
+  <!-- ====================================================== -->
+
+  <p>Bạn đã quen với <strong>layered architecture</strong>: Controller &rarr; Service &rarr; Repository &rarr; Database. Các layer xếp chồng lên nhau, dependency chảy từ trên xuống dưới. Đơn giản, trực quan — và đó cũng là vấn đề.</p>
+
+  <p>Clean Architecture của Robert C. Martin lật ngược một quy tắc duy nhất, và quy tắc đó thay đổi tất cả.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Quy tắc duy nhất: Dependency Rule</h2>
+
+  <div class="callout">
+    <div class="callout-title">Dependency Rule</div>
+    <p style="margin-bottom:0"><strong>Dependency chỉ được chảy hướng vào trong.</strong> Code ở vòng trong không được biết gì về code ở vòng ngoài. Vòng ngoài có thể tham chiếu vòng trong, nhưng không bao giờ ngược lại.</p>
+  </div>
+
+  <p>Đó là toàn bộ quy tắc. Mọi thứ khác trong Clean Architecture — Entities, Use Cases, Ports, Adapters — đều là <em>hệ quả</em> của quy tắc này.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Bốn vòng tròn</h2>
+
+  <div class="diagram">
+    <svg width="340" height="340" viewBox="0 0 340 340" xmlns="http://www.w3.org/2000/svg">
+      <!-- Outermost -->
+      <circle cx="170" cy="170" r="160" fill="#f2f0ec" stroke="#d8d4ce" stroke-width="1.5"/>
+      <text x="170" y="35" text-anchor="middle" font-family="Helvetica, sans-serif" font-size="11" fill="#888">Frameworks &amp; Drivers</text>
+
+      <!-- Second -->
+      <circle cx="170" cy="170" r="115" fill="#faf9f7" stroke="#d8d4ce" stroke-width="1.5"/>
+      <text x="170" y="80" text-anchor="middle" font-family="Helvetica, sans-serif" font-size="11" fill="#888">Interface Adapters</text>
+
+      <!-- Third -->
+      <circle cx="170" cy="170" r="72" fill="#f2f0ec" stroke="#d8d4ce" stroke-width="1.5"/>
+      <text x="170" y="125" text-anchor="middle" font-family="Helvetica, sans-serif" font-size="11" fill="#888">Use Cases</text>
+
+      <!-- Innermost -->
+      <circle cx="170" cy="170" r="35" fill="#e8d5cf" stroke="#c1462e" stroke-width="2"/>
+      <text x="170" y="174" text-anchor="middle" font-family="Helvetica, sans-serif" font-size="11" font-weight="600" fill="#c1462e">Entities</text>
+
+      <!-- Arrows pointing inward -->
+      <defs>
+        <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+          <polygon points="0 0, 7 3.5, 0 7" fill="#c1462e"/>
+        </marker>
+      </defs>
+      <line x1="300" y1="170" x2="215" y2="170" stroke="#c1462e" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.5"/>
+      <line x1="248" y1="170" x2="250" y2="170" stroke="#c1462e" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.5"/>
+    </svg>
+    <div class="diagram-caption">Dependency chảy hướng tâm — từ ngoài vào trong, không bao giờ ngược lại</div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Vòng</th><th>Chứa gì</th><th>Ví dụ trong Laravel</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Entities</strong></td>
+        <td>Business rules cốt lõi, tồn tại độc lập với mọi thứ</td>
+        <td>Class <code>Order</code>, <code>Money</code> (thuần PHP, không Eloquent)</td>
+      </tr>
+      <tr>
+        <td><strong>Use Cases</strong></td>
+        <td>Logic của từng tác vụ cụ thể (application flow)</td>
+        <td><code>CreateOrderUseCase</code>, <code>CancelOrderUseCase</code></td>
+      </tr>
+      <tr>
+        <td><strong>Interface Adapters</strong></td>
+        <td>Chuyển đổi dữ liệu giữa Use Cases và bên ngoài</td>
+        <td>Controllers, View Models, DTOs, Repositories (implements interface)</td>
+      </tr>
+      <tr>
+        <td><strong>Frameworks &amp; Drivers</strong></td>
+        <td>Công cụ, framework, I/O bên ngoài</td>
+        <td>Laravel router, Eloquent models, MySQL, Redis, Mail</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ====================================================== -->
+
+  <h2>Khác gì với Layered Architecture?</h2>
+
+  <p>Trong layered architecture truyền thống, <code>OrderService</code> thường gọi trực tiếp <code>OrderRepository</code> (Eloquent). Business logic <em>phụ thuộc</em> vào database. Đổi database &rarr; sửa business logic.</p>
+
+  <p>Trong Clean Architecture, Use Case <em>không biết</em> database là gì. Nó chỉ biết một <strong>interface</strong> (Port). Vòng ngoài (Infrastructure) <em>implement</em> interface đó. Dependency chảy vào trong.</p>
+
+  <h3>Layered (truyền thống): dependency đi xuống</h3>
+  <pre><code><span class="code-comment">// Controller phụ thuộc Service, Service phụ thuộc Repository (Eloquent)</span>
+<span class="code-keyword">class</span> <span class="code-type">OrderController</span> {
+    <span class="code-keyword">public function</span> store(Request $req) {
+        $order = <span class="code-keyword">new</span> <span class="code-type">Order</span>($req-&gt;all());
+        $order-&gt;save();  <span class="code-comment">// Eloquent trong controller. Lộn xộn.</span>
+    }
+}</code></pre>
+
+  <h3>Clean Architecture: dependency đi vào trong</h3>
+  <pre><code><span class="code-comment">// Vòng TRONG: Use Case chỉ biết interface, không biết Eloquent</span>
+<span class="code-keyword">interface</span> <span class="code-type">OrderRepository</span> {
+    <span class="code-keyword">public function</span> save(<span class="code-type">Order</span> $order): <span class="code-type">void</span>;
+}
+
+<span class="code-keyword">class</span> <span class="code-type">CreateOrderUseCase</span> {
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private</span> <span class="code-type">OrderRepository</span> $repo  <span class="code-comment">// ← Port, không phải Eloquent</span>
+    ) {}
+
+    <span class="code-keyword">public function</span> execute(<span class="code-type">CreateOrderInput</span> $input): <span class="code-type">Order</span> {
+        $order = <span class="code-type">Order</span>::create($input-&gt;items, $input-&gt;customerId);
+        $<span class="code-keyword">this</span>-&gt;repo-&gt;save($order);  <span class="code-comment">// Gọi interface, không gọi DB</span>
+        <span class="code-keyword">return</span> $order;
+    }
+}</code></pre>
+
+  <pre><code><span class="code-comment">// Vòng NGOÀI: Eloquent implements interface của vòng trong</span>
+<span class="code-keyword">class</span> <span class="code-type">EloquentOrderRepository</span> <span class="code-keyword">implements</span> <span class="code-type">OrderRepository</span> {
+    <span class="code-keyword">public function</span> save(<span class="code-type">Order</span> $order): <span class="code-type">void</span> {
+        <span class="code-type">OrderModel</span>::create([  <span class="code-comment">// Eloquent ở đây, cách xa business logic</span>
+            <span class="code-string">'customer_id'</span> =&gt; $order-&gt;customerId(),
+            <span class="code-string">'total'</span> =&gt; $order-&gt;total()-&gt;amount(),
+        ]);
+    }
+}</code></pre>
+
+  <div class="callout green">
+    <div class="callout-title">Kết quả</div>
+    <p style="margin-bottom:0"><code>CreateOrderUseCase</code> không cần Laravel, không cần MySQL, không cần HTTP. Bạn có thể test nó bằng một <code>FakeOrderRepository</code> trong RAM. Đổi database? Viết thêm một <code>PostgresOrderRepository</code>. Business logic không đổi một dòng.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Kiểm tra hiểu biết</h2>
+
+  <div class="quiz">
+    <div class="quiz-question">Trong Clean Architecture, Entity (vòng trong cùng) được phép tham chiếu đến cái gì?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Controller và View Model ở vòng ngoài</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Eloquent Model và database connection</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Chỉ các Entity khác và quy tắc nghiệp vụ thuần túy</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Use Case và Repository interface</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-1-feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-question">Tại sao <code>EloquentOrderRepository</code> nằm ở vòng NGOÀI chứ không ở vòng trong?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì nó chạy chậm hơn business logic</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Vì nó phụ thuộc vào framework (Eloquent), và dependency chỉ được chảy vào trong</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì nó chứa ít code hơn Use Case</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì nó cần được test riêng biệt</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-2-feedback"></div>
+  </div>
+
+  <script>
+    function handleQuiz(btn, isCorrect) {
+      const quiz = btn.closest('.quiz');
+      const feedback = quiz.querySelector('.quiz-feedback');
+      const options = quiz.querySelectorAll('.quiz-option');
+
+      options.forEach(opt => {
+        opt.disabled = true;
+        const correct = opt.getAttribute('onclick').includes('true');
+        if (correct) opt.classList.add('correct');
+      });
+
+      if (isCorrect) {
+        btn.classList.add('correct');
+        feedback.innerHTML = '<strong>Đúng.</strong> Dependency Rule: vòng trong không biết gì về vòng ngoài. Entity là thuần business rule.';
+      } else {
+        btn.classList.add('wrong');
+        feedback.innerHTML = '<strong>Chưa chính xác.</strong> Xem lại: dependency chỉ chảy <em>vào trong</em>. Vòng trong cùng (Entity) không được biết về bất kỳ vòng nào bên ngoài.';
+      }
+      feedback.classList.add('show');
+    }
+  </script>
+
+  <!-- ====================================================== -->
+
+  <div class="lesson-footer">
+    <div class="source-rec">
+      <strong>Nguồn đọc chính:</strong> <em>Clean Architecture</em> by Robert C. Martin — <strong>Chapter 22: The Clean Architecture</strong> &amp; <strong>Chapter 25: The Dependency Rule</strong>.
+      <br><a href="https://www.oreilly.com/library/view/clean-architecture-a/9780134494272/">Đọc trên O'Reilly &rarr;</a>
+    </div>
+
+    <p><strong>Tài liệu tham chiếu:</strong> <a href="../reference/clean-architecture-cheatsheet.html">Clean Architecture Cheat Sheet</a> — tóm tắt nhanh các layer và quy tắc.</p>
+
+    <div class="callout">
+      <div class="callout-title">Câu hỏi tiếp theo?</div>
+      <p style="margin-bottom:0">Hỏi tôi bất cứ điều gì chưa rõ trong bài này. Ví dụ: <em>"Use Case khác gì so với Service class mà tôi hay viết?"</em> hoặc <em>"Khi nào thì không nên dùng Clean Architecture?"</em> — tôi là giáo viên của bạn.</p>
+    </div>
+
+    <div class="nav-links">
+      <span>&larr; Bài đầu tiên</span>
+      <a href="./0002-entities-vs-models.html">Bài 2: Entities vs Eloquent Models &rarr;</a>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bài 2 — Entities vs Eloquent Models</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Entities vs Eloquent Models</h1>
+  <p class="subtitle">Bài 2 / Clean Architecture + Laravel &middot; ~10 phút</p>
+
+  <!-- ====================================================== -->
+
+  <p>Bài 1 nói: Entity không được biết gì về vòng ngoài. Nhưng trong Laravel, mọi model bạn viết đều kế thừa <code>Illuminate\Database\Eloquent\Model</code>. Vậy cái class <code>Order</code> mà bạn <code>extends Model</code> — nó là Entity hay là gì khác?</p>
+
+  <p>Câu trả lời: nó không phải Entity. Nó là <strong>Active Record</strong>. Hai thứ này trông giống nhau nhưng giải quyết vấn đề khác nhau, và trộn chúng lại là lý do phổ biến nhất khiến người ta "làm Clean Architecture" nhưng vẫn bị kẹt Eloquent trong business logic.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Active Record vs Entity</h2>
+
+  <div class="callout">
+    <div class="callout-title">Active Record (Eloquent Model)</div>
+    <p style="margin-bottom:0">Một object <em>vừa</em> giữ dữ liệu <em>vừa</em> biết cách tự lưu/xóa/query chính nó vào database. <code>$order->save()</code> hoạt động vì <code>Order</code> biết về table, connection, query builder.</p>
+  </div>
+
+  <div class="callout green">
+    <div class="callout-title">Entity (Domain Object)</div>
+    <p style="margin-bottom:0">Một object <em>chỉ</em> giữ dữ liệu và business rule. Nó không biết database tồn tại. <code>$order->cancel()</code> chỉ thay đổi state trong bộ nhớ và áp dụng quy tắc nghiệp vụ — không có câu SQL nào chạy.</p>
+  </div>
+
+  <p>Vấn đề của Active Record không phải nó "xấu" — nó rất tiện cho CRUD. Vấn đề là nó <strong>trộn hai trách nhiệm</strong>: persistence (lưu trữ) và business rule (nghiệp vụ). Theo Dependency Rule ở Bài 1, hai thứ này phải nằm ở hai vòng khác nhau.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Ví dụ: quy tắc nghiệp vụ ở đâu?</h2>
+
+  <p>Giả sử: <em>"Đơn hàng chỉ được hủy khi chưa giao (status &ne; shipped) và trong vòng 24h kể từ lúc tạo."</em> Đây là business rule. Nó thuộc vòng Entity — không phụ thuộc Laravel, không phụ thuộc DB.</p>
+
+  <h3>Cách thường gặp: rule nằm trong Eloquent Model</h3>
+  <pre><code><span class="code-keyword">class</span> <span class="code-type">Order</span> <span class="code-keyword">extends</span> <span class="code-type">Model</span> {
+    <span class="code-keyword">public function</span> cancel(): <span class="code-type">void</span> {
+        <span class="code-keyword">if</span> ($<span class="code-keyword">this</span>-&gt;status === <span class="code-string">'shipped'</span>) {
+            <span class="code-keyword">throw new</span> <span class="code-type">Exception</span>(<span class="code-string">'Cannot cancel shipped order'</span>);
+        }
+        <span class="code-keyword">if</span> ($<span class="code-keyword">this</span>-&gt;created_at-&gt;diffInHours(<span class="code-keyword">now</span>()) &gt; 24) {
+            <span class="code-keyword">throw new</span> <span class="code-type">Exception</span>(<span class="code-string">'Cancellation window expired'</span>);
+        }
+        $<span class="code-keyword">this</span>-&gt;status = <span class="code-string">'cancelled'</span>;
+        $<span class="code-keyword">this</span>-&gt;save();  <span class="code-comment">// ← business rule và persistence dính chặt vào nhau</span>
+    }
+}</code></pre>
+
+  <div class="callout">
+    <div class="callout-title">Tại sao đây là vấn đề?</div>
+    <p style="margin-bottom:0">Để test rule "24h" và "chưa shipped", bạn <strong>phải</strong> có một database thật, chạy migration, insert record. Business rule — thứ đáng lẽ test được trong vài milli-giây — giờ chậm và giòn (fragile) vì phụ thuộc I/O.</p>
+  </div>
+
+  <h3>Clean Architecture: Entity thuần, Eloquent chỉ là cái vỏ lưu trữ</h3>
+  <pre><code><span class="code-comment">// Vòng TRONG: app/Domain/Order/Order.php — thuần PHP, không "extends" gì cả</span>
+<span class="code-keyword">final class</span> <span class="code-type">Order</span> {
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private</span> <span class="code-type">OrderId</span> $id,
+        <span class="code-keyword">private</span> <span class="code-type">OrderStatus</span> $status,
+        <span class="code-keyword">private</span> <span class="code-type">DateTimeImmutable</span> $createdAt,
+    ) {}
+
+    <span class="code-keyword">public function</span> cancel(<span class="code-type">DateTimeImmutable</span> $now): <span class="code-type">void</span> {
+        <span class="code-keyword">if</span> ($<span class="code-keyword">this</span>-&gt;status-&gt;isShipped()) {
+            <span class="code-keyword">throw new</span> <span class="code-type">CannotCancelShippedOrder</span>();
+        }
+        $hours = ($now-&gt;getTimestamp() - $<span class="code-keyword">this</span>-&gt;createdAt-&gt;getTimestamp()) / 3600;
+        <span class="code-keyword">if</span> ($hours &gt; 24) {
+            <span class="code-keyword">throw new</span> <span class="code-type">CancellationWindowExpired</span>();
+        }
+        $<span class="code-keyword">this</span>-&gt;status = <span class="code-type">OrderStatus</span>::cancelled();  <span class="code-comment">// chỉ đổi state trong RAM</span>
+    }
+
+    <span class="code-keyword">public function</span> status(): <span class="code-type">OrderStatus</span> { <span class="code-keyword">return</span> $<span class="code-keyword">this</span>-&gt;status; }
+}</code></pre>
+
+  <pre><code><span class="code-comment">// Vòng NGOÀI: app/Infrastructure/Persistence/Models/OrderModel.php — Eloquent thuần túy, không có business rule</span>
+<span class="code-keyword">class</span> <span class="code-type">OrderModel</span> <span class="code-keyword">extends</span> <span class="code-type">Model</span> {
+    <span class="code-keyword">protected</span> $table = <span class="code-string">'orders'</span>;
+    <span class="code-keyword">protected</span> $fillable = [<span class="code-string">'status'</span>, <span class="code-string">'created_at'</span>];
+    <span class="code-comment">// Không method nghiệp vụ nào ở đây. Chỉ là cái vỏ lưu trữ.</span>
+}</code></pre>
+
+  <pre><code><span class="code-comment">// Adapter nối hai bên: chuyển đổi Entity ↔ Eloquent Model</span>
+<span class="code-keyword">class</span> <span class="code-type">EloquentOrderRepository</span> <span class="code-keyword">implements</span> <span class="code-type">OrderRepository</span> {
+    <span class="code-keyword">public function</span> find(<span class="code-type">OrderId</span> $id): <span class="code-type">Order</span> {
+        $row = <span class="code-type">OrderModel</span>::findOrFail($id-&gt;value());
+        <span class="code-keyword">return new</span> <span class="code-type">Order</span>(
+            <span class="code-keyword">new</span> <span class="code-type">OrderId</span>($row-&gt;id),
+            <span class="code-type">OrderStatus</span>::from($row-&gt;status),
+            $row-&gt;created_at-&gt;toDateTimeImmutable(),
+        );  <span class="code-comment">// row → Entity</span>
+    }
+
+    <span class="code-keyword">public function</span> save(<span class="code-type">Order</span> $order): <span class="code-type">void</span> {
+        <span class="code-type">OrderModel</span>::updateOrCreate(
+            [<span class="code-string">'id'</span> =&gt; $order-&gt;id()-&gt;value()],
+            [<span class="code-string">'status'</span> =&gt; $order-&gt;status()-&gt;value()],
+        );  <span class="code-comment">// Entity → row</span>
+    }
+}</code></pre>
+
+  <div class="callout green">
+    <div class="callout-title">Kết quả</div>
+    <p style="margin-bottom:0">Test <code>Order::cancel()</code> giờ chỉ cần: <code>new Order(...)</code>, gọi <code>cancel()</code>, assert exception hoặc state mới. Không database, không Laravel bootstrap. Chạy trong &lt;1ms.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Cái giá phải trả</h2>
+
+  <p>Đừng ngộ nhận đây là miễn phí. Bạn giờ có <strong>hai class</strong> cho một khái niệm "Order" (Entity + Eloquent Model), và một lớp mapping ở giữa. Với app CRUD đơn giản, đây là chi phí không đáng — Eloquent Model đủ dùng. Chỉ tách khi Entity có business rule đủ phức tạp để đáng test độc lập.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Kiểm tra hiểu biết</h2>
+
+  <div class="quiz">
+    <div class="quiz-question">Method nào sau đây <strong>không nên</strong> xuất hiện trong một Entity thuần (vòng trong)?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">cancel(): áp dụng quy tắc hủy đơn hàng</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">save(): tự lưu chính nó vào bảng orders</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">status(): trả về trạng thái hiện tại</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">isShipped(): kiểm tra trạng thái đã giao chưa</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-1-feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-question">Trong ví dụ trên, ai chịu trách nhiệm chuyển đổi giữa <code>Order</code> (Entity) và <code>OrderModel</code> (Eloquent)?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Chính class Order, thông qua một method toEloquent()</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Controller, ngay trước khi trả response</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">EloquentOrderRepository — adapter ở vòng ngoài</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">OrderModel, thông qua một Eloquent accessor</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-2-feedback"></div>
+  </div>
+
+  <script>
+    function handleQuiz(btn, isCorrect) {
+      const quiz = btn.closest('.quiz');
+      const feedback = quiz.querySelector('.quiz-feedback');
+      const options = quiz.querySelectorAll('.quiz-option');
+
+      options.forEach(opt => {
+        opt.disabled = true;
+        const correct = opt.getAttribute('onclick').includes('true');
+        if (correct) opt.classList.add('correct');
+      });
+
+      if (isCorrect) {
+        btn.classList.add('correct');
+        feedback.innerHTML = '<strong>Đúng.</strong> Entity không biết database tồn tại. Việc lưu trữ là trách nhiệm của Adapter ở vòng ngoài.';
+      } else {
+        btn.classList.add('wrong');
+        feedback.innerHTML = '<strong>Chưa chính xác.</strong> Nhớ lại Dependency Rule: Entity không được biết gì về persistence. Việc mapping và lưu trữ luôn thuộc về Adapter ở vòng ngoài (Repository).';
+      }
+      feedback.classList.add('show');
+    }
+  </script>
+
+  <!-- ====================================================== -->
+
+  <div class="lesson-footer">
+    <div class="source-rec">
+      <strong>Nguồn đọc chính:</strong> Martin Fowler — <strong>"Active Record" pattern (Patterns of Enterprise Application Architecture)</strong>, và <em>Clean Architecture</em> Chapter 21 (<strong>Screaming Architecture</strong>) để hiểu tại sao khung sườn code không nên "hét lên" tên framework.
+      <br><a href="https://martinfowler.com/eaaCatalog/activeRecord.html">Đọc Active Record pattern trên martinfowler.com &rarr;</a>
+    </div>
+
+    <p><strong>Tài liệu tham chiếu:</strong> <a href="../reference/clean-architecture-cheatsheet.html">Clean Architecture Cheat Sheet</a> — mục "Cấu trúc thư mục" đã có ví dụ Domain/ vs Infrastructure/.</p>
+
+    <div class="callout">
+      <div class="callout-title">Câu hỏi tiếp theo?</div>
+      <p style="margin-bottom:0">Hỏi tôi bất cứ điều gì chưa rõ. Ví dụ: <em>"Value Object như OrderId khác gì một string thường?"</em> hoặc <em>"Có phải Entity nào cũng cần tách khỏi Eloquent không?"</em></p>
+    </div>
+
+    <div class="nav-links">
+      <a href="./0001-the-dependency-rule.html">&larr; Bài 1: Dependency Rule</a>
+      <a href="./0003-use-cases.html">Bài 3: Use Cases &rarr;</a>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bài 5 — Testing: Ba tầng, ba tốc độ</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Testing</h1>
+  <p class="subtitle">Bài 5 / Clean Architecture + Laravel &middot; ~10 phút</p>
+
+  <!-- ====================================================== -->
+
+  <p>Bốn bài trước đã nhắc liên tục: "test không cần database". Bài này biến lời hứa đó thành code thật — và chỉ ra rằng Clean Architecture không loại bỏ test có database, nó chỉ <strong>giảm số lượng</strong> test cần đến database xuống mức tối thiểu.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Ba tầng test, khớp với ba tầng architecture</h2>
+
+  <table>
+    <thead>
+      <tr><th>Tầng</th><th>Test gì</th><th>Cần gì</th><th>Tốc độ</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Entity test</strong></td>
+        <td>Business rule thuần (<code>Order::cancel()</code>)</td>
+        <td>Không gì cả — chỉ PHPUnit</td>
+        <td>&lt;1ms / test</td>
+      </tr>
+      <tr>
+        <td><strong>Use Case test</strong></td>
+        <td>Flow điều phối, gọi Port đúng thứ tự</td>
+        <td>Fake implementation của Port</td>
+        <td>~1-5ms / test</td>
+      </tr>
+      <tr>
+        <td><strong>Adapter test</strong></td>
+        <td>Mapping Entity ↔ Eloquent đúng, SQL đúng</td>
+        <td>Database thật (SQLite in-memory được)</td>
+        <td>~10-50ms / test</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <div class="callout-title">Nguyên tắc: đảo ngược test pyramid truyền thống</div>
+    <p style="margin-bottom:0">Trong app viết theo layered thông thường, hầu hết test phải chạm database vì business logic dính trong Eloquent. Với Clean Architecture, <strong>đa số</strong> test (Entity + Use Case) không cần database — chỉ một lớp mỏng (Adapter test) mới cần.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Tầng 1: Entity test — không mock gì cả</h2>
+
+  <pre><code><span class="code-comment">// tests/Unit/Domain/OrderTest.php</span>
+<span class="code-keyword">class</span> <span class="code-type">OrderTest</span> <span class="code-keyword">extends</span> <span class="code-type">TestCase</span> {
+    <span class="code-keyword">public function</span> test_cannot_cancel_shipped_order(): <span class="code-type">void</span> {
+        $order = <span class="code-type">OrderFactory</span>::shipped();  <span class="code-comment">// factory dựng Entity trong RAM</span>
+
+        $<span class="code-keyword">this</span>-&gt;expectException(<span class="code-type">CannotCancelShippedOrder</span>::class);
+        $order-&gt;cancel(<span class="code-keyword">new</span> DateTimeImmutable());
+    }
+
+    <span class="code-keyword">public function</span> test_cannot_cancel_after_24_hours(): <span class="code-type">void</span> {
+        $createdAt = <span class="code-keyword">new</span> DateTimeImmutable(<span class="code-string">'-25 hours'</span>);
+        $order = <span class="code-type">OrderFactory</span>::pendingCreatedAt($createdAt);
+
+        $<span class="code-keyword">this</span>-&gt;expectException(<span class="code-type">CancellationWindowExpired</span>::class);
+        $order-&gt;cancel(<span class="code-keyword">new</span> DateTimeImmutable());
+    }
+}</code></pre>
+
+  <p>Không <code>RefreshDatabase</code>, không <code>artisan migrate</code>, không HTTP. <code>new Order(...)</code> rồi gọi method. Đây là lý do tách Entity khỏi Eloquent (Bài 2) đáng công.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Tầng 2: Use Case test — Fake thay cho Mock</h2>
+
+  <p>Đây là chỗ nhiều người dùng <code>Mockery::mock()</code> hoặc <code>$this-&gt;createMock()</code>. Nó hoạt động, nhưng có xu hướng làm test giòn (fragile) — test biết quá nhiều về <em>cách</em> Use Case gọi Port, không chỉ <em>kết quả</em>. Một <strong>Fake</strong> — implementation thật, chạy trong RAM — thường bền hơn.</p>
+
+  <pre><code><span class="code-comment">// tests/Fakes/InMemoryOrderRepository.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">InMemoryOrderRepository</span> <span class="code-keyword">implements</span> <span class="code-type">OrderRepository</span> {
+    <span class="code-keyword">private</span> <span class="code-type">array</span> $orders = [];
+
+    <span class="code-keyword">public function</span> save(<span class="code-type">Order</span> $order): <span class="code-type">void</span> {
+        $<span class="code-keyword">this</span>-&gt;orders[$order-&gt;id()-&gt;value()] = $order;
+    }
+
+    <span class="code-keyword">public function</span> find(<span class="code-type">OrderId</span> $id): <span class="code-type">Order</span> {
+        <span class="code-keyword">return</span> $<span class="code-keyword">this</span>-&gt;orders[$id-&gt;value()] ?? <span class="code-keyword">throw new</span> <span class="code-type">OrderNotFound</span>();
+    }
+}</code></pre>
+
+  <pre><code><span class="code-comment">// tests/Unit/Application/CreateOrderUseCaseTest.php</span>
+<span class="code-keyword">class</span> <span class="code-type">CreateOrderUseCaseTest</span> <span class="code-keyword">extends</span> <span class="code-type">TestCase</span> {
+    <span class="code-keyword">public function</span> test_creates_order_when_payment_succeeds(): <span class="code-type">void</span> {
+        $orders = <span class="code-keyword">new</span> <span class="code-type">InMemoryOrderRepository</span>();
+        $payment = <span class="code-keyword">new</span> <span class="code-type">FakePaymentGateway</span>(alwaysSucceeds: <span class="code-keyword">true</span>);
+        $useCase = <span class="code-keyword">new</span> <span class="code-type">CreateOrderUseCase</span>($orders, $payment);
+
+        $output = $useCase-&gt;execute(<span class="code-keyword">new</span> <span class="code-type">CreateOrderInput</span>(<span class="code-string">'cust-1'</span>, [[<span class="code-string">'sku'</span> =&gt; <span class="code-string">'A'</span>, <span class="code-string">'qty'</span> =&gt; 2]]));
+
+        $<span class="code-keyword">this</span>-&gt;assertSame(<span class="code-string">'pending'</span>, $output-&gt;status);
+        $<span class="code-keyword">this</span>-&gt;assertNotNull($orders-&gt;find(<span class="code-type">OrderId</span>::fromString($output-&gt;orderId)));
+    }
+
+    <span class="code-keyword">public function</span> test_throws_when_payment_fails(): <span class="code-type">void</span> {
+        $useCase = <span class="code-keyword">new</span> <span class="code-type">CreateOrderUseCase</span>(
+            <span class="code-keyword">new</span> <span class="code-type">InMemoryOrderRepository</span>(),
+            <span class="code-keyword">new</span> <span class="code-type">FakePaymentGateway</span>(alwaysSucceeds: <span class="code-keyword">false</span>),
+        );
+
+        $<span class="code-keyword">this</span>-&gt;expectException(<span class="code-type">PaymentFailedException</span>::class);
+        $useCase-&gt;execute(<span class="code-keyword">new</span> <span class="code-type">CreateOrderInput</span>(<span class="code-string">'cust-1'</span>, [[<span class="code-string">'sku'</span> =&gt; <span class="code-string">'A'</span>, <span class="code-string">'qty'</span> =&gt; 1]]));
+    }
+}</code></pre>
+
+  <div class="callout">
+    <div class="callout-title">Fake vs Mock — khi nào dùng cái nào?</div>
+    <p style="margin-bottom:0"><strong>Fake</strong> (implementation thật, đơn giản): dùng cho Port bạn gọi nhiều lần, muốn test hành vi thật (lưu rồi đọc lại). <strong>Mock</strong> (kiểm tra lệnh gọi): dùng khi bạn chỉ cần assert "method X có được gọi với tham số Y" — ví dụ verify <code>NotificationGateway::send()</code> được gọi đúng một lần.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Tầng 3: Adapter test — database thật, nhưng ít</h2>
+
+  <p>Fake không tự động đúng. Bạn vẫn cần một test xác nhận <code>EloquentOrderRepository</code> thật sự lưu và đọc đúng dữ liệu — mapping Entity ↔ Eloquent (Bài 2) có thể sai. Đây là chỗ database thật (hoặc SQLite in-memory cho tốc độ) xuất hiện — nhưng chỉ ở tầng Adapter, không lan lên Use Case hay Entity.</p>
+
+  <pre><code><span class="code-comment">// tests/Integration/EloquentOrderRepositoryTest.php</span>
+<span class="code-keyword">class</span> <span class="code-type">EloquentOrderRepositoryTest</span> <span class="code-keyword">extends</span> <span class="code-type">TestCase</span> {
+    <span class="code-keyword">use</span> RefreshDatabase;  <span class="code-comment">// duy nhất chỗ này cần DB</span>
+
+    <span class="code-keyword">public function</span> test_save_then_find_returns_equivalent_order(): <span class="code-type">void</span> {
+        $repo = <span class="code-keyword">new</span> <span class="code-type">EloquentOrderRepository</span>();
+        $order = <span class="code-type">OrderFactory</span>::pending();
+
+        $repo-&gt;save($order);
+        $found = $repo-&gt;find($order-&gt;id());
+
+        $<span class="code-keyword">this</span>-&gt;assertTrue($order-&gt;equals($found));
+    }
+}</code></pre>
+
+  <!-- ====================================================== -->
+
+  <h2>Kiểm tra hiểu biết</h2>
+
+  <div class="quiz">
+    <div class="quiz-question">Test nào trong ba tầng nhất thiết phải chạm vào database thật?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Entity test, vì business rule cần validate với dữ liệu thật</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Use Case test, vì nó điều phối nhiều Port cùng lúc</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Adapter test, vì nó xác nhận mapping Entity ↔ Eloquent hoạt động đúng</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Không tầng nào cần, Fake luôn có thể thay database</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-1-feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-question"><code>InMemoryOrderRepository</code> trong ví dụ trên là loại test double nào?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Mock — vì nó implement một interface</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Fake — vì nó là implementation thật, hoạt động trong RAM, không chỉ kiểm tra lệnh gọi</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Stub — vì nó không lưu dữ liệu thật</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Spy — vì nó ghi lại lịch sử các lệnh gọi</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-2-feedback"></div>
+  </div>
+
+  <script>
+    function handleQuiz(btn, isCorrect) {
+      const quiz = btn.closest('.quiz');
+      const feedback = quiz.querySelector('.quiz-feedback');
+      const options = quiz.querySelectorAll('.quiz-option');
+
+      options.forEach(opt => {
+        opt.disabled = true;
+        const correct = opt.getAttribute('onclick').includes('true');
+        if (correct) opt.classList.add('correct');
+      });
+
+      if (isCorrect) {
+        btn.classList.add('correct');
+        feedback.innerHTML = '<strong>Đúng.</strong> Chỉ Adapter mới thật sự chạm hạ tầng (database, SDK bên ngoài) — đó là lý do nó cần được test tích hợp riêng.';
+      } else {
+        btn.classList.add('wrong');
+        feedback.innerHTML = '<strong>Chưa chính xác.</strong> Nhớ lại bảng ba tầng: chỉ Adapter test mới cần database thật, vì nó xác nhận việc mapping/lưu trữ hoạt động đúng.';
+      }
+      feedback.classList.add('show');
+    }
+  </script>
+
+  <!-- ====================================================== -->
+
+  <div class="lesson-footer">
+    <div class="source-rec">
+      <strong>Nguồn đọc chính:</strong> Jeroen De Dauw — <strong>"Clean Architecture: UseCase tests"</strong>, một bài viết thực tế và chi tiết về cách viết test cho Use Case Interactor.
+      <br><a href="https://www.entropywins.wtf/blog/2018/08/01/clean-architecture-usecase-tests/">Clean Architecture: UseCase tests &rarr;</a>
+    </div>
+
+    <p><strong>Tài liệu tham chiếu:</strong> <a href="../reference/clean-architecture-cheatsheet.html">Clean Architecture Cheat Sheet</a> — có thể bổ sung bảng ba tầng test này nếu bạn muốn.</p>
+
+    <div class="callout">
+      <div class="callout-title">Câu hỏi tiếp theo?</div>
+      <p style="margin-bottom:0">Hỏi tôi ngay nếu chưa rõ. Ví dụ: <em>"Feature test (HTTP end-to-end) của Laravel thì xếp vào tầng nào?"</em> hoặc <em>"Có nên viết Fake cho mọi Port không?"</em></p>
+    </div>
+
+    <div class="nav-links">
+      <a href="./0004-ports-and-adapters.html">&larr; Bài 4: Ports &amp; Adapters</a>
+      <a href="./0006-project-structure.html">Bài 6: Cấu trúc dự án Laravel mới &rarr;</a>
+    </div>
+  </div>
+
+</body>
+</html>

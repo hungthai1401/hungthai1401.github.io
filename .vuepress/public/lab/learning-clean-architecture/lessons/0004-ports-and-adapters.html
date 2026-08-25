@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bài 4 — Ports &amp; Adapters</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Ports &amp; Adapters</h1>
+  <p class="subtitle">Bài 4 / Clean Architecture + Laravel &middot; ~10 phút</p>
+
+  <!-- ====================================================== -->
+
+  <p>Ở Bài 1, bạn đã thấy <code>OrderRepository</code> là một interface, và <code>EloquentOrderRepository</code> implement nó. Bài này đặt tên chính xác cho hai thứ đó — <strong>Port</strong> và <strong>Adapter</strong> — và chỉ ra quy tắc quan trọng nhất mà người mới hay làm sai: <strong>ai được quyền định nghĩa interface</strong>.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Port là gì? Adapter là gì?</h2>
+
+  <div class="callout">
+    <div class="callout-title">Port</div>
+    <p style="margin-bottom:0">Một <strong>interface</strong> định nghĩa <em>những gì</em> Use Case cần từ thế giới bên ngoài — không nói <em>làm cách nào</em>. Port được định nghĩa và <strong>sở hữu bởi vòng trong</strong> (Application), dù implementation của nó nằm ở vòng ngoài.</p>
+  </div>
+
+  <div class="callout green">
+    <div class="callout-title">Adapter</div>
+    <p style="margin-bottom:0">Implementation cụ thể của một Port, nằm ở vòng ngoài (Infrastructure). Nó biết chi tiết kỹ thuật: Eloquent, Stripe SDK, cURL, SMTP...</p>
+  </div>
+
+  <p>Tên "Ports and Adapters" thực ra đến từ một architecture khác — <strong>Hexagonal Architecture</strong> của Alistair Cockburn (1994) — nhưng Uncle Bob dùng chính khái niệm này khi viết Clean Architecture. Hai cái tên, cùng một ý tưởng.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Quy tắc dễ làm sai nhất: ai định nghĩa interface?</h2>
+
+  <p>Trực giác thông thường: viết <code>StripePaymentGateway</code> trước, rồi "trích xuất" interface từ nó (right-click &rarr; Extract Interface trong IDE). <strong>Đây là sai hướng.</strong></p>
+
+  <div class="callout">
+    <div class="callout-title">Sai: Adapter định nghĩa Port</div>
+    <p style="margin-bottom:0">Nếu interface được sinh ra từ Stripe SDK, nó sẽ mang hình dáng của Stripe (ví dụ: method tên <code>createPaymentIntent()</code>, tham số theo format Stripe). Đổi sang PayPal? Interface không còn khớp — bạn lại phải sửa Use Case.</p>
+  </div>
+
+  <div class="callout green">
+    <div class="callout-title">Đúng: Use Case định nghĩa Port theo ngôn ngữ nghiệp vụ</div>
+    <p style="margin-bottom:0">Port tên là <code>PaymentGateway</code> với method <code>charge(Money $amount, PaymentMethod $method): PaymentResult</code> — viết bằng ngôn ngữ mà Use Case hiểu, không mang dấu vết Stripe hay PayPal. Adapter phải "khuất phục" theo hình dạng này, không phải ngược lại.</p>
+  </div>
+
+  <p>Đây chính là <strong>Dependency Inversion Principle</strong> (chữ D trong SOLID) áp dụng vào architecture: interface thuộc về bên <em>dùng</em> nó (vòng trong), không thuộc về bên <em>implement</em> nó (vòng ngoài).</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Ví dụ đầy đủ: PaymentGateway</h2>
+
+  <pre><code><span class="code-comment">// app/Application/Ports/PaymentGateway.php — Port, sống ở vòng Application</span>
+<span class="code-keyword">interface</span> <span class="code-type">PaymentGateway</span> {
+    <span class="code-keyword">public function</span> charge(<span class="code-type">Money</span> $amount, <span class="code-type">PaymentMethod</span> $method): <span class="code-type">PaymentResult</span>;
+}</code></pre>
+
+  <pre><code><span class="code-comment">// app/Application/Order/CreateOrder/CreateOrderUseCase.php — chỉ biết Port</span>
+<span class="code-keyword">final class</span> <span class="code-type">CreateOrderUseCase</span> {
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private</span> <span class="code-type">OrderRepository</span> $orders,      <span class="code-comment">// Port #1</span>
+        <span class="code-keyword">private</span> <span class="code-type">PaymentGateway</span> $payment,     <span class="code-comment">// Port #2</span>
+    ) {}
+
+    <span class="code-keyword">public function</span> execute(<span class="code-type">CreateOrderInput</span> $input): <span class="code-type">CreateOrderOutput</span> {
+        $order = <span class="code-type">Order</span>::createNew(<span class="code-comment">/* ... */</span>);
+
+        $result = $<span class="code-keyword">this</span>-&gt;payment-&gt;charge($order-&gt;total(), $input-&gt;paymentMethod);
+        <span class="code-keyword">if</span> (!$result-&gt;isSuccessful()) {
+            <span class="code-keyword">throw new</span> <span class="code-type">PaymentFailedException</span>($result-&gt;errorMessage());
+        }
+
+        $<span class="code-keyword">this</span>-&gt;orders-&gt;save($order);
+        <span class="code-keyword">return new</span> <span class="code-type">CreateOrderOutput</span>($order-&gt;id()-&gt;value(), $order-&gt;status()-&gt;value());
+    }
+}</code></pre>
+
+  <pre><code><span class="code-comment">// app/Infrastructure/Payment/StripePaymentGateway.php — Adapter, chi tiết Stripe nằm hết ở đây</span>
+<span class="code-keyword">final class</span> <span class="code-type">StripePaymentGateway</span> <span class="code-keyword">implements</span> <span class="code-type">PaymentGateway</span> {
+    <span class="code-keyword">public function</span> __construct(<span class="code-keyword">private</span> \Stripe\StripeClient $stripe) {}
+
+    <span class="code-keyword">public function</span> charge(<span class="code-type">Money</span> $amount, <span class="code-type">PaymentMethod</span> $method): <span class="code-type">PaymentResult</span> {
+        <span class="code-keyword">try</span> {
+            $intent = $<span class="code-keyword">this</span>-&gt;stripe-&gt;paymentIntents-&gt;create([
+                <span class="code-string">'amount'</span> =&gt; $amount-&gt;toCents(),   <span class="code-comment">// dịch Money → format Stripe cần</span>
+                <span class="code-string">'currency'</span> =&gt; $amount-&gt;currency(),
+                <span class="code-string">'payment_method'</span> =&gt; $method-&gt;token(),
+                <span class="code-string">'confirm'</span> =&gt; <span class="code-keyword">true</span>,
+            ]);
+            <span class="code-keyword">return</span> <span class="code-type">PaymentResult</span>::success($intent-&gt;id);
+        } <span class="code-keyword">catch</span> (\Stripe\Exception\CardException $e) {
+            <span class="code-keyword">return</span> <span class="code-type">PaymentResult</span>::failure($e-&gt;getMessage());  <span class="code-comment">// dịch Stripe exception → domain result</span>
+        }
+    }
+}</code></pre>
+
+  <!-- ====================================================== -->
+
+  <h2>Nối dây trong Laravel: Service Container</h2>
+
+  <p>Use Case cần một <code>PaymentGateway</code>, nhưng ai quyết định nó nhận <code>StripePaymentGateway</code> chứ không phải <code>FakePaymentGateway</code>? Laravel's Service Container, khai báo ở <code>AppServiceProvider</code>:</p>
+
+  <pre><code><span class="code-comment">// app/Providers/AppServiceProvider.php</span>
+<span class="code-keyword">public function</span> register(): <span class="code-type">void</span> {
+    $<span class="code-keyword">this</span>-&gt;app-&gt;bind(<span class="code-type">PaymentGateway</span>::class, <span class="code-type">StripePaymentGateway</span>::class);
+    $<span class="code-keyword">this</span>-&gt;app-&gt;bind(<span class="code-type">OrderRepository</span>::class, <span class="code-type">EloquentOrderRepository</span>::class);
+}</code></pre>
+
+  <p>Khi Laravel resolve <code>CreateOrderUseCase</code> (ví dụ trong Controller constructor), nó tự động tiêm <code>StripePaymentGateway</code> vào chỗ interface <code>PaymentGateway</code>. Use Case không biết — và không cần biết — điều này xảy ra.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Vì sao đáng công: đổi Adapter mà không đụng Use Case</h2>
+
+  <div class="callout green">
+    <div class="callout-title">Test</div>
+    <p style="margin-bottom:0"><code>new CreateOrderUseCase(new InMemoryOrderRepository(), new FakePaymentGateway(alwaysSucceeds: true))</code> — test luồng "thanh toán thất bại" chỉ cần <code>FakePaymentGateway(alwaysSucceeds: false)</code>. Không gọi Stripe thật, không tốn tiền test, không cần internet.</p>
+  </div>
+
+  <div class="callout green">
+    <div class="callout-title">Đổi provider</div>
+    <p style="margin-bottom:0">Công ty chuyển từ Stripe sang PayPal? Viết <code>PayPalPaymentGateway implements PaymentGateway</code>, đổi một dòng binding. <code>CreateOrderUseCase</code> không đổi một ký tự.</p>
+  </div>
+
+  <!-- ====================================================== -->
+
+  <h2>Kiểm tra hiểu biết</h2>
+
+  <div class="quiz">
+    <div class="quiz-question">Ai nên định nghĩa method signature của Port <code>PaymentGateway</code>?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Trích xuất từ Stripe SDK, vì Stripe là provider chính hiện tại</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Use Case, viết theo ngôn ngữ nghiệp vụ mà nó cần — không mang dấu vết của bất kỳ provider cụ thể nào</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Bất kỳ ai viết Adapter trước sẽ định hình interface</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Laravel Service Container tự sinh ra interface</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-1-feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-question">Đâu là lý do CHÍNH đáng để tách Port khỏi Adapter, thay vì gọi Stripe SDK trực tiếp trong Use Case?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì Stripe SDK có quá nhiều method không cần dùng</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì interface luôn nhanh hơn class cụ thể</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Vì nó cho phép test Use Case bằng Fake, và đổi provider mà không sửa Use Case</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì PHP bắt buộc mọi dependency injection phải qua interface</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-2-feedback"></div>
+  </div>
+
+  <script>
+    function handleQuiz(btn, isCorrect) {
+      const quiz = btn.closest('.quiz');
+      const feedback = quiz.querySelector('.quiz-feedback');
+      const options = quiz.querySelectorAll('.quiz-option');
+
+      options.forEach(opt => {
+        opt.disabled = true;
+        const correct = opt.getAttribute('onclick').includes('true');
+        if (correct) opt.classList.add('correct');
+      });
+
+      if (isCorrect) {
+        btn.classList.add('correct');
+        feedback.innerHTML = '<strong>Đúng.</strong> Port thuộc về vòng trong (Application) và phải nói ngôn ngữ nghiệp vụ. Adapter khuất phục theo hình dạng của Port, không phải ngược lại.';
+      } else {
+        btn.classList.add('wrong');
+        feedback.innerHTML = '<strong>Chưa chính xác.</strong> Nhớ Dependency Inversion: interface do bên trong (Use Case) sở hữu và định nghĩa. Giá trị chính là khả năng test bằng Fake và hoán đổi Adapter tự do.';
+      }
+      feedback.classList.add('show');
+    }
+  </script>
+
+  <!-- ====================================================== -->
+
+  <div class="lesson-footer">
+    <div class="source-rec">
+      <strong>Nguồn đọc chính:</strong> Alistair Cockburn — <strong>"Hexagonal Architecture"</strong> (bài viết gốc định nghĩa Ports and Adapters), và <em>Clean Architecture</em> Chapter 11 (<strong>DIP: The Dependency Inversion Principle</strong>).
+      <br><a href="https://blog.allegro.tech/2020/05/hexagonal-architecture-by-example.html">Hexagonal Architecture by example (Allegro Tech) &rarr;</a>
+    </div>
+
+    <p><strong>Tài liệu tham chiếu:</strong> <a href="../reference/clean-architecture-cheatsheet.html">Clean Architecture Cheat Sheet</a> — glossary có định nghĩa Port và Adapter.</p>
+
+    <div class="callout">
+      <div class="callout-title">Câu hỏi tiếp theo?</div>
+      <p style="margin-bottom:0">Hỏi tôi ngay nếu chưa rõ. Ví dụ: <em>"Driving port khác Driven port như thế nào?"</em> hoặc <em>"Có nên viết Fake hay dùng Mockery cho test?"</em></p>
+    </div>
+
+    <div class="nav-links">
+      <a href="./0003-use-cases.html">&larr; Bài 3: Use Cases</a>
+      <a href="./0005-testing.html">Bài 5: Testing &rarr;</a>
+    </div>
+  </div>
+
+</body>
+</html>

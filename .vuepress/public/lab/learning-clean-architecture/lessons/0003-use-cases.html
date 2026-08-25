@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bài 3 — Use Cases: Application Business Rules</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <h1>Use Cases</h1>
+  <p class="subtitle">Bài 3 / Clean Architecture + Laravel &middot; ~10 phút</p>
+
+  <!-- ====================================================== -->
+
+  <p>Bạn chắc đã viết một class <code>OrderService</code> với 15 method: <code>create()</code>, <code>cancel()</code>, <code>refund()</code>, <code>applyDiscount()</code>, <code>sendConfirmation()</code>... Nó phình to dần theo thời gian, và không ai muốn touch nó vì sợ vỡ chỗ khác.</p>
+
+  <p>Clean Architecture giải quyết vấn đề này bằng một quy tắc đơn giản: <strong>một Use Case = một hành động = một class</strong>. Không có "OrderService" khổng lồ. Chỉ có <code>CreateOrderUseCase</code>, <code>CancelOrderUseCase</code>, <code>RefundOrderUseCase</code> — mỗi cái đứng riêng, làm đúng một việc.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Use Case là gì, chính xác?</h2>
+
+  <div class="callout">
+    <div class="callout-title">Use Case</div>
+    <p style="margin-bottom:0">Một class đại diện cho <strong>một hành động cụ thể mà người dùng (hoặc hệ thống) thực hiện</strong>. Nó điều phối (orchestrate) Entities và gọi các Port (interface) để hoàn thành hành động đó — không chứa business rule chi tiết (rule nằm ở Entity), không biết HTTP/Eloquent là gì (đó là vòng ngoài).</p>
+  </div>
+
+  <p>Nói cách khác: Entity biết <em>"đơn hàng được hủy như thế nào"</em> (rule). Use Case biết <em>"khi hủy đơn hàng, phải làm những bước gì"</em> (flow): lấy đơn hàng ra, gọi <code>cancel()</code>, lưu lại, gửi thông báo.</p>
+
+  <table>
+    <thead>
+      <tr><th>&nbsp;</th><th>Entity</th><th>Use Case</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Trả lời câu hỏi</strong></td>
+        <td>"Đơn hàng này CÓ ĐƯỢC hủy không?"</td>
+        <td>"Khi hủy đơn hàng, cần làm những gì?"</td>
+      </tr>
+      <tr>
+        <td><strong>Chứa</strong></td>
+        <td>Rule nghiệp vụ thuần (invariant)</td>
+        <td>Flow điều phối (orchestration)</td>
+      </tr>
+      <tr>
+        <td><strong>Phụ thuộc</strong></td>
+        <td>Không gì cả</td>
+        <td>Entity + Port (interface)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ====================================================== -->
+
+  <h2>Input / Output: Use Case không nhận Request, không trả Response</h2>
+
+  <p>Sai lầm phổ biến: truyền <code>Illuminate\Http\Request</code> thẳng vào Use Case. Làm vậy là kéo vòng ngoài (HTTP) vào vòng trong — vi phạm Dependency Rule ngay lập tức.</p>
+
+  <p>Thay vào đó, Use Case nhận một <strong>Input DTO</strong> (dữ liệu thuần) và trả về một <strong>Output DTO</strong>. Controller là nơi duy nhất biết <code>Request</code> tồn tại — nó đọc Request, tạo Input DTO, gọi Use Case, rồi chuyển Output DTO thành JSON response.</p>
+
+  <pre><code><span class="code-comment">// app/Application/Order/CreateOrder/CreateOrderInput.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">CreateOrderInput</span> {
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">public readonly</span> <span class="code-type">string</span> $customerId,
+        <span class="code-keyword">public readonly</span> <span class="code-type">array</span> $items,  <span class="code-comment">// [['sku' => ..., 'qty' => ...], ...]</span>
+    ) {}
+}</code></pre>
+
+  <pre><code><span class="code-comment">// app/Application/Order/CreateOrder/CreateOrderOutput.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">CreateOrderOutput</span> {
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">public readonly</span> <span class="code-type">string</span> $orderId,
+        <span class="code-keyword">public readonly</span> <span class="code-type">string</span> $status,
+    ) {}
+}</code></pre>
+
+  <pre><code><span class="code-comment">// app/Application/Order/CreateOrder/CreateOrderUseCase.php</span>
+<span class="code-keyword">final class</span> <span class="code-type">CreateOrderUseCase</span> {
+    <span class="code-keyword">public function</span> __construct(
+        <span class="code-keyword">private</span> <span class="code-type">OrderRepository</span> $orders,      <span class="code-comment">// Port</span>
+        <span class="code-keyword">private</span> <span class="code-type">InventoryChecker</span> $inventory, <span class="code-comment">// Port</span>
+    ) {}
+
+    <span class="code-keyword">public function</span> execute(<span class="code-type">CreateOrderInput</span> $input): <span class="code-type">CreateOrderOutput</span> {
+        <span class="code-keyword">foreach</span> ($input-&gt;items <span class="code-keyword">as</span> $item) {
+            <span class="code-keyword">if</span> (!$<span class="code-keyword">this</span>-&gt;inventory-&gt;isInStock($item[<span class="code-string">'sku'</span>], $item[<span class="code-string">'qty'</span>])) {
+                <span class="code-keyword">throw new</span> <span class="code-type">OutOfStockException</span>($item[<span class="code-string">'sku'</span>]);
+            }
+        }
+
+        $order = <span class="code-type">Order</span>::createNew(  <span class="code-comment">// Entity tự áp dụng rule khi tạo</span>
+            <span class="code-type">CustomerId</span>::fromString($input-&gt;customerId),
+            <span class="code-type">OrderItems</span>::fromArray($input-&gt;items),
+        );
+
+        $<span class="code-keyword">this</span>-&gt;orders-&gt;save($order);  <span class="code-comment">// gọi Port, không biết Eloquent</span>
+
+        <span class="code-keyword">return new</span> <span class="code-type">CreateOrderOutput</span>(
+            $order-&gt;id()-&gt;value(),
+            $order-&gt;status()-&gt;value(),
+        );
+    }
+}</code></pre>
+
+  <p>Controller giờ rất mỏng — chỉ là cầu nối:</p>
+
+  <pre><code><span class="code-keyword">class</span> <span class="code-type">OrderController</span> {
+    <span class="code-keyword">public function</span> __construct(<span class="code-keyword">private</span> <span class="code-type">CreateOrderUseCase</span> $useCase) {}
+
+    <span class="code-keyword">public function</span> store(Request $request): JsonResponse {
+        $output = $<span class="code-keyword">this</span>-&gt;useCase-&gt;execute(<span class="code-keyword">new</span> <span class="code-type">CreateOrderInput</span>(
+            $request-&gt;input(<span class="code-string">'customer_id'</span>),
+            $request-&gt;input(<span class="code-string">'items'</span>),
+        ));
+        <span class="code-keyword">return</span> response()-&gt;json([<span class="code-string">'order_id'</span> =&gt; $output-&gt;orderId, <span class="code-string">'status'</span> =&gt; $output-&gt;status]);
+    }
+}</code></pre>
+
+  <!-- ====================================================== -->
+
+  <h2>Vì sao đáng công?</h2>
+
+  <div class="callout green">
+    <div class="callout-title">Test không cần HTTP, không cần DB</div>
+    <p style="margin-bottom:0"><code>$useCase = new CreateOrderUseCase(new FakeOrderRepository(), new FakeInventoryChecker());</code> — chạy <code>execute()</code>, assert output. Không route, không middleware, không migration. Test chạy trong vài milli-giây.</p>
+  </div>
+
+  <p>Ngoài ra: mỗi Use Case là một điểm vào rõ ràng. Muốn biết hệ thống làm được gì? Đọc tên các file trong <code>Application/</code> — đó chính là danh sách tính năng, không cần đọc controller lộn xộn.</p>
+
+  <!-- ====================================================== -->
+
+  <h2>Kiểm tra hiểu biết</h2>
+
+  <div class="quiz">
+    <div class="quiz-question">Vì sao Use Case nhận <code>CreateOrderInput</code> (DTO) thay vì nhận trực tiếp <code>Illuminate\Http\Request</code>?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì DTO nhanh hơn Request về performance</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">Vì Request thuộc vòng ngoài (framework); nhận nó trực tiếp sẽ vi phạm Dependency Rule</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì Request không thể serialize thành JSON</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Vì Laravel không cho phép truyền Request vào class khác</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-1-feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="quiz-question">Một class <code>OrderService</code> có 15 method (create, cancel, refund, applyDiscount...) khác gì so với thiết kế Use Case?</div>
+    <ul class="quiz-options">
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Không khác gì, chỉ là cách gọi tên khác nhau</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, true)">OrderService gộp nhiều hành động vào một class; mỗi Use Case tách riêng một hành động thành một class</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">OrderService dùng Eloquent, Use Case thì không được dùng bất kỳ database nào</button></li>
+      <li><button class="quiz-option" onclick="handleQuiz(this, false)">Use Case chỉ dùng được với API, không dùng được với web thường</button></li>
+    </ul>
+    <div class="quiz-feedback" id="quiz-2-feedback"></div>
+  </div>
+
+  <script>
+    function handleQuiz(btn, isCorrect) {
+      const quiz = btn.closest('.quiz');
+      const feedback = quiz.querySelector('.quiz-feedback');
+      const options = quiz.querySelectorAll('.quiz-option');
+
+      options.forEach(opt => {
+        opt.disabled = true;
+        const correct = opt.getAttribute('onclick').includes('true');
+        if (correct) opt.classList.add('correct');
+      });
+
+      if (isCorrect) {
+        btn.classList.add('correct');
+        feedback.innerHTML = '<strong>Đúng.</strong> Use Case chỉ biết dữ liệu thuần (DTO). Việc đọc Request/trả Response luôn là việc của Controller ở vòng ngoài.';
+      } else {
+        btn.classList.add('wrong');
+        feedback.innerHTML = '<strong>Chưa chính xác.</strong> Điểm mấu chốt: Use Case phải cách ly khỏi framework (Dependency Rule) và mỗi Use Case chỉ nên đại diện cho một hành động duy nhất — không phải một "service" gộp nhiều hành động.';
+      }
+      feedback.classList.add('show');
+    }
+  </script>
+
+  <!-- ====================================================== -->
+
+  <div class="lesson-footer">
+    <div class="source-rec">
+      <strong>Nguồn đọc chính:</strong> <em>Clean Architecture</em> by Robert C. Martin — <strong>Chapter 20: Business Rules</strong> (Entities vs Use Cases) &amp; <strong>Chapter 22</strong> (Use Case Interactor). Đọc thêm bài viết thực tế về pattern Input/Output boundary:
+      <br><a href="https://softwareengineering.stackexchange.com/questions/400818/clean-architecture-how-to-pass-request-data-towards-inner-most-layer">Clean Architecture - How to pass request data towards inner layers (Software Engineering SE) &rarr;</a>
+    </div>
+
+    <p><strong>Tài liệu tham chiếu:</strong> <a href="../reference/clean-architecture-cheatsheet.html">Clean Architecture Cheat Sheet</a> — mục "Bốn vòng" đã định nghĩa Use Case ở vòng thứ hai.</p>
+
+    <div class="callout">
+      <div class="callout-title">Câu hỏi tiếp theo?</div>
+      <p style="margin-bottom:0">Hỏi tôi ngay nếu chưa rõ. Ví dụ: <em>"Use Case có được gọi Use Case khác không?"</em> hoặc <em>"Transaction DB (BEGIN/COMMIT) nên đặt ở đâu?"</em></p>
+    </div>
+
+    <div class="nav-links">
+      <a href="./0002-entities-vs-models.html">&larr; Bài 2: Entities vs Eloquent Models</a>
+      <a href="./0004-ports-and-adapters.html">Bài 4: Ports &amp; Adapters &rarr;</a>
+    </div>
+  </div>
+
+</body>
+</html>
